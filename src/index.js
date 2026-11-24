@@ -85,6 +85,7 @@ export function deobfuscate(code, userOptions = {}) {
   tree.commit(); // normalise formatting once so "changed" means a real transformation
   const stats = {};
   const broken = new Set();
+  const problems = []; // modules disabled for the rest of the run (always reported by the CLI)
   const seen = new Set([hash(tree.code)]);
   let iterations = 0;
 
@@ -96,6 +97,7 @@ export function deobfuscate(code, userOptions = {}) {
       n = mod.run(ctx);
     } catch (err) {
       log(`[${mod.name}] crashed: ${err.stack || err}`);
+      problems.push({ module: mod.name, reason: 'crashed', error: String(err && err.stack || err) });
       broken.add(mod.name);
       tree.load(tree.code); // drop partial edits
       return 0;
@@ -106,6 +108,7 @@ export function deobfuscate(code, userOptions = {}) {
       tree.commit();
     } catch (err) {
       log(`[${mod.name}] produced unparsable code, reverting and disabling it: ${err.message}`);
+      problems.push({ module: mod.name, reason: 'unparsable output', error: err.message });
       broken.add(mod.name);
       tree.load(before);
       return 0;
@@ -149,7 +152,7 @@ export function deobfuscate(code, userOptions = {}) {
     }
   }
 
-  return { code: tree.code, original, changed: hash(tree.code) !== hash(original), iterations, stats, pending, dynamic: options.dynamic };
+  return { code: tree.code, original, changed: hash(tree.code) !== hash(original), iterations, stats, pending, problems, dynamic: options.dynamic };
 }
 
 export { Tree };

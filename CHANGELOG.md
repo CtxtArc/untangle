@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+- A module that crashes (or produces unparsable code) is still disabled for the rest of the run,
+  but the CLI now always says so (`warning: inlineConstants crashed and was disabled ...`) instead
+  of only under `-v`, and the library returns the details in `result.problems`.
+
 ## 0.5.0
 
 More of a WSH dropper now resolves **statically**, without `--dyn`:

@@ -131,6 +131,11 @@ if (!result.dynamic && pending.length) {
   console.error(`static mode: ${what} left as-is; rerun with --dyn to evaluate them (executes sample code: isolated VM only)`);
 }
 
+for (const p of result.problems || []) {
+  const first = p.error.split('\n').slice(0, 2).join(' | ');
+  console.error(`warning: ${p.module} ${p.reason} and was disabled for this run, so output may be incomplete: ${first}`);
+}
+
 if (o.stats || o.verbose) {
   console.error(`iterations: ${result.iterations}`);
   for (const [k, v] of Object.entries(result.stats)) console.error(`  ${k.padEnd(22)} ${v}`);
