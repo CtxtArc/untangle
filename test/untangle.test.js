@@ -176,7 +176,7 @@ test('redeclarations are only split when straight-line', () => {
 
 test('dead code: re-declared junk and its writes are removed together', () => {
   same("var J = 'x'; function n(a) { J += 'a'; } var J = 'y'; function n(b) { J += 'b'; } go();", 'go();');
-  unchanged("var J = 'x'; J += 'a'; use(J);");
+  same("var J = 'x'; J += 'a'; use(J);", "use('xa');"); // a live accumulator folds (0.5.0)
 });
 
 test('input decoding: UTF-16 (BOM / no BOM), UTF-8 BOM, ANSI, JScript.Encode', async () => {
@@ -299,4 +299,22 @@ test('self-feeding junk variable: removed when only it reads itself, kept when r
   // a write to anything else, or a call with effects, keeps the statement
   assert.match(deobfuscate(wrap('if (p) { other = 1; } run("x");')).code, /other = 1/);
   assert.match(deobfuscate(wrap('p = p + log(); run("x");')).code, /log\(\)/);
+});
+
+test('static: += accumulators, join loops over constant string arrays, plain-literal regexes', () => {
+  const st = (c) => deobfuscate(c).code;
+  assert.equal(st("var c = ''; c += 'a'; c += 'b'; use(c);"), norm("use('ab');"));
+  assert.equal(st("var a = ['', 'w', 'in']; var s = ''; for (var i = 0; i < a.length; i++) { s += a[i]; } use(s);"), norm("use('win');"));
+  assert.equal(st(`try {
+    var c = ''; c += 'aXXb'; c += 'cXXd';
+    var p = c.split('XX'); var o = '';
+    for (var i = 0; i < p.length; i++) { o += p[i]; }
+    run(('xXX' + o.replace(/'/g, "''") + 'XXy').split('XX').join(''));
+  } catch (e) {}`), norm("try { run('xabcdy'); } catch (e) {}"));
+  // not provably strings / counter used later / array changed / real regexes: left alone
+  assert.match(st('var a = [1, , 3]; var s = ""; for (var i = 0; i < a.length; i++) { s += a[i]; } use(s);'), /for \(/);
+  assert.match(st('var a = ["x"]; var s = ""; for (var i = 0; i < a.length; i++) { s += a[i]; } use(s, i);'), /for \(/);
+  assert.match(st('var a = ["x"]; a[0] = f(); var s = ""; for (var i = 0; i < a.length; i++) { s += a[i]; } use(s);'), /for \(/);
+  assert.match(st("x = 'a.b'.split(/./);"), /split\(\/\.\//);
+  assert.equal(st("var s = 'a'; s += s; use(s);"), norm("use('aa');"));
 });

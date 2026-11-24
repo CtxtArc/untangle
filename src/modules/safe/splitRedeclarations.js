@@ -1,10 +1,13 @@
+import { isInside } from '../../utils.js';
+
 // Give each re-definition of a `var` its own name when the definitions are straight-line:
 //   var s = 'a'; use(s); var s = 'b'; use(s);   ->   var s = 'a'; use(s); var s_1 = 'b'; use(s_1);
 //   var s = '..'; s = s.split('#').join('');     ->   var s = '..'; var s_1 = s.split('#').join('');
+//   var s = ''; s += 'a'; s += 'b';               ->   var s = ''; var s_1 = s + 'a'; var s_2 = s_1 + 'b';
 // Afterwards every binding has a single definition, so constant inlining, builtin evaluation
 // and dead-code removal apply again.
 //
-// Definitions are `var` declarations and plain `name = expr;` statements. Conditions: the first
+// Definitions are `var` declarations and plain `name = expr;` / `name op= expr;` statements. Conditions: the first
 // definition is a `var` declaration, all definitions sit directly in the same statement list and
 // are the only writes; every read lies inside that list after at least one definition and not
 // inside a nested function (which could run later and see a different value).
@@ -21,6 +24,8 @@ function usedNames(tree) {
   }
   return names;
 }
+
+const COMPOUND = new Set(['=', '+=', '-=', '*=', '/=', '%=', '<<=', '>>=', '>>>=', '&=', '|=', '^=']);
 
 export default {
   name: 'splitRedeclarations',
@@ -47,9 +52,9 @@ export default {
           const id = r.identifier;
           const a = id.parent;
           const st = a && a.parent;
-          if (r.isRead() || !a || a.type !== 'AssignmentExpression' || a.operator !== '=' || a.left !== id ||
-              !st || st.type !== 'ExpressionStatement' || st.parent[st.parentKey] !== list || st.parentIndex == null) continue next;
-          decls.push({ assign: st, name: id, index: st.parentIndex, reads: [] });
+          if (!a || a.type !== 'AssignmentExpression' || a.left !== id || !COMPOUND.has(a.operator) || r.isRead() !== (a.operator !== '=') ||
+              !st || st.type !== 'ExpressionStatement' || st.expression !== a || st.parent[st.parentKey] !== list || st.parentIndex == null) continue next;
+          decls.push({ assign: st, name: id, index: st.parentIndex, reads: [], compound: a.operator !== '=' ? a : null });
         }
         if (decls.length < 2) continue;
         decls.sort((a, b) => a.index - b.index);
@@ -58,8 +63,15 @@ export default {
         for (const r of v.references) {
           if (r.isWrite()) {
             if (r.init && decls.some((x) => x.def && x.def.name === r.identifier)) continue;
-            if (decls.some((x) => x.name === r.identifier)) continue;
-            continue next;
+            const own = decls.find((x) => x.name === r.identifier);
+            if (!own) continue next;
+            if (own.compound) {
+              // `s += e` reads the definition before it
+              const prev = decls.filter((x) => x.index < own.index).pop();
+              if (!prev) continue next;
+              own.prev = prev;
+            }
+            continue;
           }
           if (r.from.variableScope !== v.scope.variableScope) continue next;
           const idx = stmtIndexIn(r.identifier, list);
@@ -79,12 +91,24 @@ export default {
           names.add(name);
           plan.push([decls[i], name]);
         }
-        const nodes = plan.flatMap(([x]) => [x.def ? x.def.name : x.name, ...x.reads]);
-        if (!ctx.canReplaceAll(nodes)) continue;
+        const newName = new Map([[decls[0], v.name], ...plan]);
+        const nodes = plan.flatMap(([x]) => [...(x.compound ? [] : [x.def ? x.def.name : x.name]), ...x.reads]);
+        const compounds = plan.filter(([x]) => x.compound).map(([x]) => x.compound);
+        if (!ctx.canReplaceAll(nodes) || !ctx.canReplaceAll(compounds)) continue;
+        if (nodes.some((id) => compounds.some((a) => isInside(id, a)))) continue; // `s += s`: leave it
         for (const [x, name] of plan) {
-          ctx.replace(x.def ? x.def.name : x.name, { type: 'Identifier', name });
+          if (!x.compound) ctx.replace(x.def ? x.def.name : x.name, { type: 'Identifier', name });
           if (x.assign) x.assign.__declare = true; // `name_1 = expr;` -> `var name_1 = expr;` at fixup
           for (const id of x.reads) ctx.replace(id, { type: 'Identifier', name });
+        }
+        // `s += e` -> `s_2 = s_1 + e`
+        for (const [x, name] of plan) {
+          if (!x.compound) continue;
+          const a = x.compound;
+          ctx.replace(a, {
+            type: 'AssignmentExpression', operator: '=', left: { type: 'Identifier', name },
+            right: { type: 'BinaryExpression', operator: a.operator.slice(0, -1), left: { type: 'Identifier', name: newName.get(x.prev) }, right: a.right },
+          });
         }
       }
     }

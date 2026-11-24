@@ -37,6 +37,9 @@ const GLOBAL_METHODS = {
     'log2', 'log10', 'exp', 'hypot', 'imul', 'clz32', 'fround'].map((k) => [k, Math[k]])),
 };
 
+// no metacharacters and no escapes: the pattern matches exactly its own text
+const PLAIN_REGEX = /^[^\\^$.*+?()[\]{}|/]+$/;
+
 class Refuse extends Error {}
 const refuse = () => { throw new Refuse(); };
 const isGlobal = (n) => n.type === 'Identifier' && !n.variable && !n.isDecl;
@@ -84,15 +87,23 @@ function evaluate(node, cache, depth = 0) {
       return checkSize(a + b);
     }
     case 'CallExpression': {
-      if (node.optional || node.arguments.some((a) => a.type === 'SpreadElement' || (a.type === 'Literal' && a.regex))) refuse();
-      const args = node.arguments.map((a) => evaluate(a, cache, depth + 1));
+      if (node.optional || node.arguments.some((a) => a.type === 'SpreadElement')) refuse();
       const c = node.callee;
+      // a regex that is only a literal string: /'/g -> replaceAll("'"), /#/ -> split('#')
+      let method = c.type === 'MemberExpression' ? propName(c, cache) : NOT;
+      const re = node.arguments[0];
+      if (re && re.type === 'Literal' && re.regex) {
+        if (!PLAIN_REGEX.test(re.regex.pattern) || !/^g?$/.test(re.regex.flags) || !['replace', 'split'].includes(method)) refuse();
+        if (method === 'replace' && re.regex.flags === 'g') method = 'replaceAll';
+      }
+      if (node.arguments.slice(1).some((a) => a.type === 'Literal' && a.regex)) refuse();
+      const args = node.arguments.map((a) => (a.type === 'Literal' && a.regex ? a.regex.pattern : evaluate(a, cache, depth + 1)));
       if (isGlobal(c) && Object.prototype.hasOwnProperty.call(GLOBALS, c.name)) {
         if (!args.every(isPrimitive)) refuse();
         return checkSize(GLOBALS[c.name](...args));
       }
       if (c.type !== 'MemberExpression') refuse();
-      const name = propName(c, cache);
+      const name = method;
       if (name === NOT) refuse();
       if (isGlobal(c.object) && GLOBAL_METHODS[c.object.name]) {
         const fn = GLOBAL_METHODS[c.object.name][name];

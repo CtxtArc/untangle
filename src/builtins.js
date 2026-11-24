@@ -41,11 +41,11 @@ function arrayStaysConstant(v, cache) {
     const m = r.identifier.parent;
     if (!m || m.type !== 'MemberExpression' || m.object !== r.identifier) return false; // passed / aliased somewhere
     const name = propName(m, cache);
-    if (name === NOT) return false;
     const p = m.parent;
     if ((p.type === 'AssignmentExpression' && p.left === m) || p.type === 'UpdateExpression' ||
         (p.type === 'UnaryExpression' && p.operator === 'delete')) return false;
-    if (p.type === 'CallExpression' && p.callee === m) return READ_ONLY_METHODS.has(name) && !MUTATING_METHODS.has(name);
+    if (p.type === 'CallExpression' && p.callee === m) return name !== NOT && READ_ONLY_METHODS.has(name) && !MUTATING_METHODS.has(name);
+    if (name === NOT) return m.computed && p.type !== 'MemberExpression'; // arr[i] read by a loop
     return name === 'length' || /^\d+$/.test(name);
   });
 }

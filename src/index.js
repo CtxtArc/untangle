@@ -24,6 +24,7 @@ import splitSequences from './modules/safe/splitSequences.js';
 import splitJoinConcat from './modules/safe/splitJoinConcat.js';
 import foldBuiltinCalls from './modules/safe/foldBuiltinCalls.js';
 import splitRedeclarations from './modules/safe/splitRedeclarations.js';
+import foldJoinLoops from './modules/safe/foldJoinLoops.js';
 import removeUnreachable from './modules/safe/removeUnreachable.js';
 import { cleanup, removeDeadCode } from './modules/safe/cleanup.js';
 import resolveBuiltinCalls from './modules/unsafe/resolveBuiltinCalls.js';
@@ -37,6 +38,7 @@ export const SAFE_MODULES = [
   simplifyBranches,
   splitSequences,
   splitRedeclarations,
+  foldJoinLoops,
   inlineConstants,
   resolveMemberAccess,
   inlineProxyVariables,

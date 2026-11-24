@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0
+
+More of a WSH dropper now resolves **statically**, without `--dyn`:
+
+- `splitRedeclarations`: `x += e` (and other compound assignments) is a definition too, so string
+  accumulators (`var c = ''; c += '...'; c += '...';`) become constants.
+- New `foldJoinLoops`: `for (var i = 0; i < a.length; i++) { s += a[i]; }` becomes
+  `s += a.join('')` when `a` is a constant array of strings (a literal, or `.split()` of a known
+  value) and the counter isn't used after the loop.
+- `foldBuiltinCalls`: a regex with no metacharacters is just a string, so `.replace(/'/g, "''")`
+  and `.split(/#/)` fold. Real regexes are still never evaluated statically.
+- Constant arrays may now be read with a computed index (`a[i]`) and stay known.
+
 ## 0.4.1
 
 - `removeDeadCode`: removes self-feeding junk variables, where every read only feeds the next
