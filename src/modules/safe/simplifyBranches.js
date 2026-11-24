@@ -1,5 +1,6 @@
 // Remove dead branches: if (true) A else B -> A ; cond ? a : b with static cond ;
 // static-left logical expressions ; while (false) {...}
+// and, for any condition, empty branches: if (c) {} else S -> if (!c) S
 import { staticTruth, staticValue, NOT, valueToNode, isPrimitive, isCanonical } from '../../values.js';
 import { walk } from '../../ast.js';
 
@@ -34,6 +35,23 @@ function hoisted(names) {
   };
 }
 
+const isEmpty = (s) => s && ((s.type === 'BlockStatement' && s.body.length === 0) || s.type === 'EmptyStatement');
+const asBlock = (s) => (s.type === 'BlockStatement' ? s : { type: 'BlockStatement', body: [s] });
+const negate = (e) => (e.type === 'UnaryExpression' && e.operator === '!' ? e.argument : { type: 'UnaryExpression', operator: '!', prefix: true, argument: e });
+
+/** if (c) {} else S -> if (!c) S ;  if (c) S else {} -> if (c) S ;  if (c) {} -> c; */
+function emptyBranches(ctx, node) {
+  const thenEmpty = isEmpty(node.consequent);
+  const elseEmpty = !node.alternate || isEmpty(node.alternate);
+  if (thenEmpty && elseEmpty) {
+    ctx.replace(node, { type: 'ExpressionStatement', expression: node.test }); // keep the condition's effects
+  } else if (thenEmpty && node.alternate.type !== 'IfStatement') { // keep `if (a); else if (b) ...` chains flat
+    ctx.replace(node, { type: 'IfStatement', test: negate(node.test), consequent: asBlock(node.alternate), alternate: null });
+  } else if (node.alternate && elseEmpty) {
+    ctx.replace(node, { type: 'IfStatement', test: node.test, consequent: node.consequent, alternate: null });
+  }
+}
+
 export default {
   name: 'simplifyBranches',
   run(ctx) {
@@ -42,7 +60,11 @@ export default {
       switch (node.type) {
         case 'IfStatement': {
           const t = staticTruth(node.test, c);
-          if (t === null || !ctx.canReplace(node)) break;
+          if (t === null) {
+            if (ctx.canReplace(node)) emptyBranches(ctx, node);
+            break;
+          }
+          if (!ctx.canReplace(node)) break;
           const keep = t ? node.consequent : node.alternate;
           const drop = t ? node.alternate : node.consequent;
           // keep hoisted `var` bindings of the dropped branch alive

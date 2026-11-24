@@ -364,3 +364,45 @@ test('dead array mutations, single-use temps, statement-body proxies', () => {
   assert.match(st("function w(p) { var k = 1; eval(p); } w('k');"), /function w/); // eval sees a local
   assert.equal(st("function w(p) { eval(p); } w('go()');"), norm('go();'));
 });
+
+test('dead IIFEs that only write onto their own fresh arguments', () => {
+  const st = (c) => deobfuscate(c).code;
+  assert.equal(st('(function (a, b) { a[b] = { x: [1, 2], y: "s" }; }(function (c, k) { c[k] = { z: 1 }; })); go();'), norm('go();'));
+  assert.equal(st('!function (a) { a.t = [1]; a.u = "v"; }({}); go();'), norm('go();'));
+  assert.equal(st('(function (a) { var t = { q: 1 }; a.x = t; }({})); go();'), norm('go();'));
+  const kept = [
+    '(function (a) { a.name = 1; }(function () {}));',             // read-only on functions (TypeError in strict mode)
+    '(function (a) { a.x = 1; }({ set x(v) { evil(); } }));',      // setter runs
+    '(function (a) { a.x = f(); }({}));',                         // value has effects
+    '(function (a) { a.x = 1; }(g));',                            // not a fresh argument
+    '(function (a) { a.x = 1; use(a); }({}));',                   // parameter escapes
+    '(function (a, k) { a[k] = 1; }({}, f()));',                  // argument has effects
+    '(function (a) { a.length = -1; }([]));',                     // RangeError
+    '(function (a) { a.__proto__ = 1; }({}));',                   // prototype change
+    '(function (a) { a.x = 1; eval(s); }({}));',                  // eval
+    '(function (a) { a.x = 1; log(); }({}));',                    // any other statement
+  ];
+  for (const c of kept) assert.match(st(c + ' go();'), /function \(a/, c);
+});
+
+test('empty branches', () => {
+  const st = (c) => deobfuscate(c).code;
+  assert.equal(st('if (f(a)) {} else { g(); }'), norm('if (!f(a)) { g(); }'));
+  assert.equal(st('if (!f(a)) {} else { g(); }'), norm('if (f(a)) { g(); }'));
+  assert.equal(st('if (f(a)) { g(); } else {}'), norm('if (f(a)) { g(); }'));
+  assert.equal(st('if (f(a)) {}'), norm('f(a);'));                          // condition's effects kept
+  assert.equal(st('if (f(a)) {} else if (b()) { g(); } else { h(); }'), norm('if (f(a)) {} else if (b()) { g(); } else { h(); }')); // chains stay flat
+});
+
+test('blob language labels', async () => {
+  const { textLanguage } = await import('../src/blobs.js');
+  assert.equal(textLanguage('local a = 1\nlocal b = 2\nlocal function f(x)\n if x then return 1 elseif x ~= 2 then return 2 end\nend\n'), 'Lua source');
+  assert.equal(textLanguage('$a = 1; $b = New-Object Net.WebClient; $c = [Convert]::FromBase64String($s)'), 'PowerShell');
+  assert.equal(textLanguage('Dim a\nSet sh = CreateObject("WScript.Shell")\nIf a Then\nEnd If\n'), 'VBScript');
+  assert.equal(textLanguage('var a = 1; let b = 2; const c = () => a === b; function f() { if (a) { return { a: 1 }; } return c(); }'), 'JavaScript');
+  assert.equal(textLanguage('<?xml version="1.0"?><a/>'), 'XML');
+  assert.equal(textLanguage('the end of the local news, then nothing. '.repeat(40)), null);
+  assert.equal(textLanguage('QUJD'.repeat(500)), null);
+  // a packed script that opens with one long data literal is still recognised
+  assert.equal(textLanguage('local T = "' + 'x'.repeat(200000) + '"\nlocal a = 1\nlocal b = 2\nif a then b = 3 elseif b ~= 1 then a = 2 end\nlocal function g() end\n'), 'Lua source');
+});

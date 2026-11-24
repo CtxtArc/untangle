@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+
+- `removeDeadCode`: removes IIFEs whose only effect is writing properties onto their own fresh
+  arguments (`(function (a, b) { a[b] = {...}; }(function () {...}))`, used to pad droppers with
+  megabytes of data tables). Every argument must be pure, written parameters must receive a fresh
+  object/array/function literal, and writes that could throw or run code (setters, `__proto__`,
+  read-only function properties, array `length`, non-static keys) keep the call.
+- `simplifyBranches`: `if (c) {} else S` becomes `if (!c) S`, an empty `else` is dropped, and
+  `if (c) {}` keeps only `c;`. `if (a); else if (b) ...` chains are left flat.
+- `--extract-blobs`: text payloads are labelled with their language when it's clear: Lua source,
+  PowerShell, VBScript, JavaScript, XML, HTML (`text (Lua source)`). The whole payload is scanned,
+  since packed scripts often open with one long data literal.
+
 ## 0.6.0
 
 Decoders padded with junk array writes, behind a wrapper that stores into a temp before `eval`,

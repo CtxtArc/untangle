@@ -29,8 +29,35 @@ function identify(buf) {
   if (buf.toString('latin1', 0, 6) === 'Rar!\x1a\x07') return 'RAR';
   if (buf.toString('latin1', 0, 6) === '7z\xbc\xaf\x27\x1c') return '7z';
   const text = buf.subarray(0, 4096).toString('utf8');
-  if (!/[\x00-\x08\x0e-\x1f]/.test(text)) return 'text';
+  if (!/[\x00-\x08\x0e-\x1f]/.test(text)) {
+    // whole payload (up to 4 MB): packed scripts often open with one long data literal
+    const lang = textLanguage(buf.subarray(0, 4 * 1024 * 1024).toString('utf8'));
+    return lang ? `text (${lang})` : 'text';
+  }
   return 'data';
+}
+
+const count = (s, re) => (s.match(re) || []).length;
+
+/** Best guess at the language of a script payload, or null. Conservative: needs several tells. */
+export function textLanguage(s) {
+  const head = s.slice(0, 512).trimStart();
+  if (/^<\?xml\b/i.test(head)) return 'XML';
+  if (/^<(!doctype html|html\b)/i.test(head)) return 'HTML';
+  // `local x = ...` / `local a, b = ...` / `local function f` are the tells; `then`, `elseif`, `~=` add up
+  const luaDecl = count(s, /\blocal\s+(function\s+[A-Za-z_]|[A-Za-z_]\w*(\s*,\s*[A-Za-z_]\w*)*\s*=[^=])/g);
+  const lua = luaDecl + count(s, /\bthen\b/g) + count(s, /\belseif\b/g) + count(s, /~=/g);
+  const luaEnd = count(s, /\bend\b/g);
+  const js = count(s, /\b(var|let|const)\s+[A-Za-z_$]/g) + count(s, /=>/g) + count(s, /===|!==/g);
+  const ps = count(s, /\$[A-Za-z_]\w*\s*=/g);
+  const psTells = /\bNew-Object\b|\[(System\.|Convert\]|Text\.Encoding|IO\.)|\b(Invoke-\w+|Add-Type|Start-Process|Get-\w+|Set-\w+)\b|\s-(join|split|replace|bxor|eq|ne)\b/i.test(s);
+  // constructs JavaScript never has (`function` alone would match JS, VBScript being case-insensitive)
+  const vbs = count(s, /^\s*(Dim\s+\w|End\s+(Sub|Function|If)\b|On\s+Error\s+Resume\s+Next\b|Set\s+\w+\s*=\s*\w)/gim);
+  if (luaDecl >= 3 && lua >= 5 && luaEnd >= 2 && lua > js) return 'Lua source';
+  if (ps >= 3 && psTells) return 'PowerShell';
+  if (vbs >= 3) return 'VBScript';
+  if (js >= 3 && count(s, /[;{}]/g) >= 10) return 'JavaScript';
+  return null;
 }
 
 function asBase64(str) {

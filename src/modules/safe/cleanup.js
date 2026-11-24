@@ -279,6 +279,91 @@ function selfFeedingTargets(v, scope) {
   return [...new Set(targets)].filter((t, _, all) => !all.some((u) => u !== t && isInside(t, u)));
 }
 
+
+// --- dead IIFEs ----------------------------------------------------------------------------------
+// Padding that builds a data table onto a throwaway argument:
+//   (function (a, b) { a[b] = { ...big literal... }; }(function () { ... }));
+// Every argument is a fresh value (a literal object/array/function or a primitive), and the body
+// only writes properties of those fresh parameters with pure values, so nothing outside can ever
+// observe the call. Writes that could throw or run code are excluded: setters / __proto__ on a
+// literal object, read-only `name` / `length` / `caller` / `arguments` of a function (a TypeError
+// in strict mode), and an array's `length` (RangeError on a bad value).
+
+const FN_READONLY = new Set(['name', 'length', 'caller', 'arguments']);
+
+function freshKind(n) {
+  if (!n) return 'undefined';
+  if (n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return 'function';
+  if (n.type === 'ArrayExpression') return n.elements.every((e) => !e || (e.type !== 'SpreadElement' && sideEffectFree(e))) ? 'array' : null;
+  if (n.type === 'ObjectExpression') {
+    const plain = n.properties.every((p) => p.type === 'Property' && p.kind === 'init' && !p.computed &&
+      propName({ type: 'MemberExpression', computed: false, property: p.key }) !== '__proto__' && sideEffectFree(p.value));
+    return plain ? 'object' : null;
+  }
+  return null;
+}
+
+/** Static key of `param[key]` / `param.key`: a literal, or a parameter that receives no argument (undefined). */
+function staticKey(m, unpassed) {
+  if (!m.computed) return m.property.type === 'Identifier' ? m.property.name : NOT;
+  const k = m.property;
+  if (k.type === 'Literal' && (typeof k.value === 'string' || typeof k.value === 'number')) return String(k.value);
+  if (k.type === 'Identifier' && k.variable && unpassed.has(k.variable)) return 'undefined';
+  return NOT;
+}
+
+export function deadIIFE(stmt, tree) {
+  if (stmt.type !== 'ExpressionStatement') return false;
+  let call = stmt.expression;
+  if (call.type === 'UnaryExpression' && ['!', 'void', '+', '-', '~'].includes(call.operator)) call = call.argument;
+  if (call.type !== 'CallExpression' || call.optional) return false;
+  const fn = call.callee;
+  if (!/^(FunctionExpression|ArrowFunctionExpression)$/.test(fn.type) || fn.async || fn.generator || fn.body.type !== 'BlockStatement') return false;
+  if (!fn.params.every((p) => p.type === 'Identifier')) return false;
+  if (call.arguments.some((a) => a.type === 'SpreadElement' || !sideEffectFree(a))) return false;
+  const scope = tree.scopeManager.acquire(fn);
+  if (!scope || evalCanSee(scope)) return false;
+  // what each parameter holds
+  const kinds = new Map();
+  const unpassed = new Set();
+  fn.params.forEach((p, i) => {
+    const v = scope.set.get(p.name);
+    if (!v) return;
+    const a = call.arguments[i];
+    kinds.set(v, a ? freshKind(a) : 'undefined');
+    if (!a) unpassed.add(v);
+  });
+  const paramOf = (id) => id.type === 'Identifier' && id.variable && kinds.has(id.variable) ? id.variable : null;
+  for (const st of fn.body.body) {
+    if (st.type === 'EmptyStatement') continue;
+    if (st.type === 'VariableDeclaration' && st.kind === 'var' &&
+        st.declarations.every((d) => d.id.type === 'Identifier' && !paramOf(d.id) && sideEffectFree(d.init))) continue;
+    if (st.type !== 'ExpressionStatement') return false;
+    const e = st.expression;
+    if (e.type !== 'AssignmentExpression' || e.operator !== '=' || e.left.type !== 'MemberExpression' || !sideEffectFree(e.right)) return false;
+    const v = paramOf(e.left.object);
+    if (!v) return false;
+    const kind = kinds.get(v);
+    const key = staticKey(e.left, unpassed);
+    if (key === NOT || !kind || kind === 'undefined') return false;
+    if (kind === 'function' && FN_READONLY.has(key)) return false;
+    if (kind === 'object' && key === '__proto__') return false;
+    if (kind === 'array' && key === 'length') return false;
+  }
+  // parameters are only ever used as write targets or unpassed keys (never read, passed or reassigned)
+  for (const [v] of kinds) {
+    for (const r of v.references) {
+      if (r.isWrite()) return false;
+      const id = r.identifier;
+      const m = id.parent;
+      if (m.type === 'MemberExpression' && m.object === id && m.parent.type === 'AssignmentExpression' && m.parent.left === m) continue;
+      if (m.type === 'MemberExpression' && m.property === id && m.computed && unpassed.has(v)) continue;
+      return false;
+    }
+  }
+  return true;
+}
+
 // Remove bindings nothing reads: every declaration (a binding may be declared many times,
 // as junk generators love to do) plus every statement that merely writes to it. All or nothing.
 export const removeDeadCode = {
@@ -287,6 +372,11 @@ export const removeDeadCode = {
     const { tree } = ctx;
     const memo = new Map();
     const pure = (n) => !n || isPureNode(n) || isBuiltinValueSafe(n, ctx.cache, memo) || sideEffectFree(n);
+
+    // whole IIFEs whose only effect is writing onto their own fresh arguments
+    for (const st of tree.ofType('ExpressionStatement')) {
+      if (inStatementList(st) && ctx.canReplace(st) && deadIIFE(st, tree)) ctx.remove(st);
+    }
 
     // script globals created as `this.NAME = ...` (and read as plain `NAME`)
     if (!ctx.options.keepGlobals && !globalsEscape(tree)) {
