@@ -21,10 +21,12 @@ import unwrapEval from './modules/safe/unwrapEval.js';
 import splitSequences from './modules/safe/splitSequences.js';
 import splitJoinConcat from './modules/safe/splitJoinConcat.js';
 import splitRedeclarations from './modules/safe/splitRedeclarations.js';
+import removeUnreachable from './modules/safe/removeUnreachable.js';
 import { cleanup, removeDeadCode } from './modules/safe/cleanup.js';
 import resolveBuiltinCalls from './modules/unsafe/resolveBuiltinCalls.js';
 import resolveDecoderCalls from './modules/unsafe/resolveDecoderCalls.js';
 import resolveEvalArguments from './modules/unsafe/resolveEvalArguments.js';
+import resolveConstantLoops from './modules/unsafe/resolveConstantLoops.js';
 
 export const SAFE_MODULES = [
   foldConstants,
@@ -40,11 +42,12 @@ export const SAFE_MODULES = [
   unflattenControlFlow,
   unwrapEval,
   splitJoinConcat,
+  removeUnreachable,
   removeDeadCode,
   cleanup,
 ];
 
-export const UNSAFE_MODULES = [resolveBuiltinCalls, resolveEvalArguments, resolveDecoderCalls];
+export const UNSAFE_MODULES = [resolveBuiltinCalls, resolveEvalArguments, resolveConstantLoops, resolveDecoderCalls];
 
 export const ALL_MODULES = [...SAFE_MODULES, ...UNSAFE_MODULES];
 

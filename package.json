@@ -1,6 +1,6 @@
 {
   "name": "untangle",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "JavaScript deobfuscator for malware reversing: restringer-style AST transforms plus sandboxed evaluation",
   "keywords": [
     "deobfuscator",
@@ -42,7 +42,7 @@
   "scripts": {
     "test": "node --test",
     "lint": "eslint .",
-    "samples": "node samples/build-obfuscated.mjs && node samples/build-packed.mjs"
+    "samples": "node samples/build-obfuscated.mjs && node samples/build-packed.mjs && node samples/build-wsh-ps1.mjs"
   },
   "engines": {
     "node": ">=22"

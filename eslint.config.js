@@ -1,6 +1,6 @@
 // Only `eslint` itself is needed: the rules are listed explicitly.
 export default [
-  { ignores: ['node_modules/', 'samples/obfuscated.js', 'samples/packed.js'] },
+  { ignores: ['node_modules/', 'samples/obfuscated.js', 'samples/packed.js', 'samples/wsh-ps1.js'] },
   {
     files: ['**/*.js', '**/*.mjs'],
     languageOptions: {

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0
+
+- `resolveConstantLoops` (sandbox): evaluates self-contained decode loops
+  (`var R = ...; for (...) { R += f(constants) }`) and replaces them with their result.
+- `splitRedeclarations` also splits straight-line reassignments (`s = s.split(x).join('')`), so
+  in-place cleanup chains resolve.
+- `removeUnreachable`: statements after `return` / `throw` / `break` / `continue` /
+  `WScript.Quit()` (hoisted `var` names and function declarations are kept).
+- `removeDeadCode`:
+  - top-level `this.NAME = ...` junk globals, when the script never reads them (and never
+    reaches the global object by computed name or alias);
+  - write-only statements now include `x++`, `x.k++` and compound assignments;
+  - wider side-effect-free initialisers (property reads, comparisons, `new Date().getTime()`,
+    `Math.*`, string methods);
+  - property writes count as dead only when the binding always holds a fresh literal, so
+    writes through aliases such as `var p = Parser.prototype; p.m = ...` are kept.
+- `splitJoinConcat` accepts long non-ASCII junk separators (e.g. `'ῒ㆕⅞ń𐊊ᚋᇭ쪐…'`).
+- New synthetic sample `samples/wsh-ps1.js` (WSH -> PowerShell via WMI) with a behaviour test.
+
 ## 0.2.1
 
 - Input decoding: UTF-16 LE/BE (with or without BOM), UTF-8 BOM, and Windows-1252 for files that

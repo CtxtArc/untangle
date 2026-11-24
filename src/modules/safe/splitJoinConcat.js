@@ -2,10 +2,11 @@
 //   var p = folder + '\\' + '♉♉♉ev♉♉♉il.e♉♉♉xe';  run(p.split('♉♉♉').join(''))
 //   -> var p = folder + '\\' + 'evil.exe';        run(p)
 //
-// HEURISTIC: this is exact only if the runtime parts (`folder`) never contain a character of
-// the separator. It only fires when the separator has no letters or digits and actually
-// occurs in the literal parts, i.e. when it is obviously junk. Disable with
-// --disable splitJoinConcat.
+// HEURISTIC: this is exact only if the runtime parts (`folder`) never contain (part of) the
+// separator. It only fires when the separator is obviously junk and actually occurs in the
+// literal parts: either it has no letters or digits at all (`♉`, `#~`), or it is a long string
+// (6+ code units) with no ASCII letters/digits and mostly non-ASCII characters
+// ('ῒ㆕⅞ń𐊊ᚋᇭ쪐…'). Disable with --disable splitJoinConcat.
 import { staticValue, NOT } from '../../values.js';
 import { clone } from '../../ast.js';
 import { isConstVariable, declarator, readRefs, readBeforeDeclaration, identifiersIn } from '../../utils.js';
@@ -18,6 +19,14 @@ function concatParts(node, out = []) {
     out.push(node);
   }
   return out;
+}
+
+export function isJunkSeparator(sep) {
+  if (!/[\p{L}\p{N}]/u.test(sep)) return true;
+  if (sep.length < 6 || /[A-Za-z0-9]/.test(sep)) return false;
+  let nonAscii = 0;
+  for (const ch of sep) if (ch.codePointAt(0) > 127) nonAscii++;
+  return nonAscii * 2 >= [...sep].length;
 }
 
 function method(call, name, cache) {
@@ -36,7 +45,7 @@ function matchSplitJoin(join, cache) {
   const sep = staticValue(split.arguments[0], cache);
   const joiner = staticValue(join.arguments[0], cache);
   if (typeof sep !== 'string' || !sep || typeof joiner !== 'string') return null;
-  if (/[\p{L}\p{N}]/u.test(sep)) return null; // only junk-looking separators
+  if (!isJunkSeparator(sep)) return null;
   return { x: split.callee.object, sep, joiner, call: join };
 }
 

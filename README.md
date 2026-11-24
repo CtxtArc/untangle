@@ -74,7 +74,7 @@ sandboxed modules run once, and the cycle repeats while anything changes.
 | `normalizeComputed` | `a['b']` → `a.b`, `{'k': 1}` → `{k: 1}` (keeps `__proto__` / `constructor` semantics) |
 | `simplifyBranches` | static `if` / `?:` / `&&` / `\|\|` / `??` / `while(false)`, keeping hoisted `var`s |
 | `splitSequences` | `a(), b()` → `a(); b();`, `return a(), b` → `a(); return b`, `var a, b` → two decls |
-| `splitRedeclarations` | `var s = 'a'; use(s); var s = 'b'; use(s)` → `s` / `s_1`, when the declarations are straight-line |
+| `splitRedeclarations` | `var s = 'a'; use(s); var s = 'b'; use(s)` and `s = s.split('#').join('')` → `s` / `s_1`, when the definitions are straight-line |
 | `inlineConstants` | `var s = 'x'; f(s)` → `f('x')` (single def, never reassigned, not read before its declaration) |
 | `resolveMemberAccess` | `['a','b'][1]`, `'abc'.length`, and constant arrays that never escape or mutate |
 | `inlineProxyVariables` | `var b = a; b()` → `a()` when `a` resolves to the same binding at every use |
@@ -83,9 +83,11 @@ sandboxed modules run once, and the cycle repeats while anything changes.
 | `unflattenControlFlow` | `'2\|0\|1'.split('\|')` + `while(true) switch(o[i++])` dispatchers → straight-line code |
 | `unwrapEval` | `eval('code')` → code, `Function('code')()` → IIFE (only when no local would be captured) |
 | `splitJoinConcat` ⚠ | `(folder + '\\♉♉ev♉♉il.exe').split('♉♉').join('')` → `folder + '\\evil.exe'` |
-| `removeDeadCode` | unused bindings, even when declared many times, plus statements that only write to them (`junk += '…'`, `obj[k] = {…}`), removed all-or-nothing |
+| `removeUnreachable` | statements after `return` / `throw` / `break` / `continue` / `WScript.Quit()` |
+| `removeDeadCode` | unused bindings, even when declared many times, plus statements that only write to them (`junk += '…'`, `obj[k] = {…}`, `x.k++`), and never-read `this.NAME = …` globals; all-or-nothing |
 | `cleanup` | empty statements, no-op expressions, nested blocks |
 | `resolveBuiltinCalls` 🔒 | `'dlrow'.split('').reverse().join('')`, `String.fromCharCode(...)`, `atob`, `parseInt`, `Math.*`; follows constant variables, so a 12-step `a.split('?').join('')` chain resolves in one evaluation |
+| `resolveConstantLoops` 🔒 | `var out = ''; for (…) out += String.fromCharCode(parseInt(blob.substr(i, 2), 16) ^ key.charCodeAt(…))` → `var out = '<decoded>'` |
 | `resolveEvalArguments` 🔒 | `eval(function(p,a,c,k,e,d){...}(...))` (Dean Edwards packer), `eval(atob(...))` |
 | `resolveDecoderCalls` 🔒 | string-array decoders: evaluates calls with literal arguments together with their context |
 

@@ -211,6 +211,13 @@ function fixup(root) {
 function expandInto(out, stmt) {
   if (!stmt) return;
   if (stmt.__removed) return;
+  if (stmt.__declare && stmt.type === 'ExpressionStatement' && stmt.expression.type === 'AssignmentExpression') {
+    out.push({
+      type: 'VariableDeclaration', kind: 'var',
+      declarations: [{ type: 'VariableDeclarator', id: stmt.expression.left, init: stmt.expression.right }],
+    });
+    return;
+  }
   if (stmt.__splice) {
     for (const s of stmt.body) expandInto(out, s);
     return;

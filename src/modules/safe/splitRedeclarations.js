@@ -1,11 +1,13 @@
-// Give each re-declaration of a `var` its own name when the declarations are straight-line:
+// Give each re-definition of a `var` its own name when the definitions are straight-line:
 //   var s = 'a'; use(s); var s = 'b'; use(s);   ->   var s = 'a'; use(s); var s_1 = 'b'; use(s_1);
+//   var s = '..'; s = s.split('#').join('');     ->   var s = '..'; var s_1 = s.split('#').join('');
 // Afterwards every binding has a single definition, so constant inlining, builtin evaluation
 // and dead-code removal apply again.
 //
-// Conditions: all declarations sit directly in the same statement list and are the only
-// writes; every read lies inside that list after at least one declaration and not inside a
-// nested function (which could run later and see a different value).
+// Definitions are `var` declarations and plain `name = expr;` statements. Conditions: the first
+// definition is a `var` declaration, all definitions sit directly in the same statement list and
+// are the only writes; every read lies inside that list after at least one definition and not
+// inside a nested function (which could run later and see a different value).
 function stmtIndexIn(node, list) {
   for (let n = node; n && n.parent; n = n.parent) if (n.parent[n.parentKey] === list && n.parentIndex !== null) return n.parentIndex;
   return -1;
@@ -27,7 +29,7 @@ export default {
     let names = null;
     for (const scope of tree.scopeManager.scopes) {
       next: for (const v of scope.variables) {
-        if (v.defs.length < 2) continue;
+        if (!v.defs.length) continue;
         const decls = [];
         let list = null;
         for (const d of v.defs) {
@@ -39,11 +41,24 @@ export default {
           list = l;
           decls.push({ def: d, index: stmt.parentIndex, reads: [] });
         }
-        decls.sort((a, b) => a.index - b.index || a.def.node.range[0] - b.def.node.range[0]);
+        // `name = expr;` statements in the same list are definitions too
+        for (const r of v.references) {
+          if (!r.isWrite() || r.init) continue;
+          const id = r.identifier;
+          const a = id.parent;
+          const st = a && a.parent;
+          if (r.isRead() || !a || a.type !== 'AssignmentExpression' || a.operator !== '=' || a.left !== id ||
+              !st || st.type !== 'ExpressionStatement' || st.parent[st.parentKey] !== list || st.parentIndex == null) continue next;
+          decls.push({ assign: st, name: id, index: st.parentIndex, reads: [] });
+        }
+        if (decls.length < 2) continue;
+        decls.sort((a, b) => a.index - b.index);
+        if (!decls[0].def) continue; // first definition must be the declaration
         if (new Set(decls.map((x) => x.index)).size !== decls.length) continue; // two in one statement
         for (const r of v.references) {
           if (r.isWrite()) {
-            if (r.init && decls.some((x) => x.def.name === r.identifier)) continue;
+            if (r.init && decls.some((x) => x.def && x.def.name === r.identifier)) continue;
+            if (decls.some((x) => x.name === r.identifier)) continue;
             continue next;
           }
           if (r.from.variableScope !== v.scope.variableScope) continue next;
@@ -64,10 +79,11 @@ export default {
           names.add(name);
           plan.push([decls[i], name]);
         }
-        const nodes = plan.flatMap(([x]) => [x.def.name, ...x.reads]);
+        const nodes = plan.flatMap(([x]) => [x.def ? x.def.name : x.name, ...x.reads]);
         if (!ctx.canReplaceAll(nodes)) continue;
         for (const [x, name] of plan) {
-          ctx.replace(x.def.name, { type: 'Identifier', name });
+          ctx.replace(x.def ? x.def.name : x.name, { type: 'Identifier', name });
+          if (x.assign) x.assign.__declare = true; // `name_1 = expr;` -> `var name_1 = expr;` at fixup
           for (const id of x.reads) ctx.replace(id, { type: 'Identifier', name });
         }
       }

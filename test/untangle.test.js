@@ -25,7 +25,8 @@ test('computed members and keys', () => {
 
 test('dead branches keep hoisted vars', () => {
   same('if (1 === 1) { a(); } else { b(); }', 'a();');
-  same("if ('x' === 'y') { var v = 1; } v = 2; use(v);", 'var v; v = 2; use(v);');
+  same("if ('x' === 'y') { var v = 1; } v = 2; use(v);", 'use(2);');
+  same("if ('x' === 'y') { var v = 1; } if (c) { v = 2; } use(v);", 'var v; if (c) { v = 2; } use(v);');
   same('x = true ? a : b; y = false || c; z = 0 && d;', 'x = a; y = c; z = 0;');
 });
 
@@ -36,7 +37,8 @@ test('sequence splitting', () => {
 
 test('constant inlining respects reassignment, hoisting and shadowing', () => {
   same("var s = 'x'; f(s);", "f('x');");
-  unchanged("var s = 'x'; s = g(); f(s);");
+  unchanged("var s = 'x'; if (c) { s = g(); } f(s);");
+  same("var s = 'x'; s = g(); f(s);", 'var s_1 = g(); f(s_1);'); // straight-line reassignment: new binding
   unchanged("f(s); var s = 'x';", { removeDeadCode: false });
   same("var s = 'x'; function g(s) { return s; } h(g, s);", "function g(s) { return s; } h(g, 'x');");
 });
@@ -94,7 +96,7 @@ test('builtin calls on literals', () => {
 test('decoder calls: deterministic, side-effect free only', () => {
   same("function d(i) { return ['a', 'b', 'c'][i - 10]; } x = d(11) + d(12);", "x = 'bc';");
   // writes global state -> not a decoder
-  const se = 'var n = 0; function f(k) { n++; return k; } x = f(1);';
+  const se = 'var n = 0; function f(k) { n++; return k; } x = f(1); report(n);';
   assert.match(deob(se), /f\(1\)/);
   // non-deterministic
   assert.match(deob('function r(k) { var t = Math.random(); return t * k; } x = r(1);'), /r\(1\)/);
@@ -187,4 +189,67 @@ test('input decoding: UTF-16 (BOM / no BOM), UTF-8 BOM, ANSI, JScript.Encode', a
   assert.equal(decodeSource(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(s)])).code, s);
   assert.equal(decodeSource(Buffer.from([0x76, 0x3d, 0x27, 0xe9, 0x80, 0x27])).code, "v='é€'");
   assert.throws(() => decodeSource(Buffer.from('#@~^MwAAAA==abc^#~@')), /JScript\.Encode/);
+});
+
+function wshTrace(code) {
+  const log = [];
+  const obj = (name) => {
+    switch (name) {
+      case 'WScript.Shell': return { ExpandEnvironmentStrings: (s) => s.replace('%TEMP%', 'C:\\Temp') };
+      case 'Scripting.FileSystemObject': return { GetTempName: () => 'radB1234.tmp',
+        CreateTextFile: (p) => ({ Write: (d) => log.push(['write', p, d]), Close() {} }) };
+      case 'WbemScripting.SWbemLocator': return { ConnectServer: () => ({
+        Get: (cls) => cls === 'Win32_Process'
+          ? { Methods_: { Item: () => ({ InParameters: { SpawnInstance_: () => ({}) } }) },
+            ExecMethod_: (m, p) => log.push(['exec', m, p.CommandLine, p.ProcessStartupInformation.ShowWindow]) }
+          : { SpawnInstance_: () => ({}) } }) };
+      default: throw new Error('unexpected ActiveX ' + name);
+    }
+  };
+  const ctx = { ActiveXObject: function (n) { return obj(n); }, WScript: { Echo() {}, Quit() { throw { quit: true }; } }, Date, Math, String, parseInt };
+  vm.createContext(ctx);
+  try { vm.runInContext(code, ctx); } catch (e) { if (!e || !e.quit) throw e; }
+  return log;
+}
+
+test('WSH -> PowerShell dropper (synthetic): junk globals, reassigned blob, decode loop, WMI launch', () => {
+  const src = fs.readFileSync(new URL('../samples/wsh-ps1.js', import.meta.url), 'utf8');
+  const out = deob(src);
+  assert.deepEqual(wshTrace(out), wshTrace(src));
+  // line endings normalised: git (or `git am`) may rewrite CRLF in the expectation file
+  const expected = fs.readFileSync(new URL('../samples/wsh-ps1.expected.ps1', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const written = wshTrace(out).find((e) => e[0] === 'write')[2].replace(/\r\n/g, '\n');
+  assert.equal(written, expected, 'decoded PowerShell matches');
+  assert.match(out, /f\.Write\('Write-Output/, 'decoded PowerShell is a literal in the output');
+  assert.doesNotMatch(out, /this\.|for \(|split\(|neverDefined|decoy/);
+  assert.ok(out.split('\n').length < 40);
+});
+
+test('constant loops: only self-contained, deterministic loops are evaluated', () => {
+  same("function f() { var o = ''; for (var i = 0; i < 3; i++) { o += String.fromCharCode(97 + i); } return o; } g(f);",
+    "function f() { return 'abc'; } g(f);");
+  // calls user code
+  assert.match(deob('function f() { var o = 0; for (var i = 0; i < 3; i++) { o += h(i); } return o; } g(f);'), /for \(/);
+  // reads a non-constant
+  assert.match(deob('function f(n) { var o = 0; for (var i = 0; i < n; i++) { o += i; } return o; } g(f);'), /for \(/);
+  // non-deterministic
+  assert.match(deob('function f() { var o = 0; for (var i = 0; i < 3; i++) { o += Math.random(); } return o; } g(f);'), /for \(/);
+  // loop variable used afterwards
+  assert.match(deob("function f() { var o = ''; for (var i = 0; i < 3; i++) { o += 'x'; } return o + i; } g(f);"), /for \(/);
+  // safe mode never evaluates
+  assert.match(deob("function f() { var o = ''; for (var i = 0; i < 3; i++) { o += 'x'; } return o; } g(f);", { unsafe: false }), /for \(/);
+});
+
+test('global this.X junk: removed only when never read', () => {
+  same("this.a = 'x'; this.b = a === 'x'; this.o = {k: 1}; o.k++; var t = new Date().getTime(); var u = t > 0; go();", 'go();');
+  unchanged("this.a = 'x'; use(a);");
+  unchanged("this.a = 'x'; use(this.a);");
+  unchanged("this.a = 'x'; this.a = g(); go();");
+  unchanged("this.a = 'x'; var k = h(); use(this[k]);"); // computed global access: keep everything
+});
+
+test('unreachable code after return / WScript.Quit()', () => {
+  same('function f() { a(); return 1; b(); } h(f);', 'function f() { a(); return 1; } h(f);');
+  same('function f() { WScript.Quit(); if (z) { d(); } } h(f);', 'function f() { WScript.Quit(); } h(f);');
+  unchanged('function f(WScript) { WScript.Quit(); more(); } h(f);');
 });
