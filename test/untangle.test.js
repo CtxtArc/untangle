@@ -175,3 +175,16 @@ test('dead code: re-declared junk and its writes are removed together', () => {
   same("var J = 'x'; function n(a) { J += 'a'; } var J = 'y'; function n(b) { J += 'b'; } go();", 'go();');
   unchanged("var J = 'x'; J += 'a'; use(J);");
 });
+
+test('input decoding: UTF-16 (BOM / no BOM), UTF-8 BOM, ANSI, JScript.Encode', async () => {
+  const { decodeSource } = await import('../src/input.js');
+  const s = "var x = 'héllo € ♉';";
+  const le = Buffer.from(s, 'utf16le');
+  const be = Buffer.from(le); be.swap16();
+  assert.equal(decodeSource(Buffer.concat([Buffer.from([0xff, 0xfe]), le])).code, s);
+  assert.equal(decodeSource(Buffer.concat([Buffer.from([0xfe, 0xff]), be])).code, s);
+  assert.equal(decodeSource(le).code, s);
+  assert.equal(decodeSource(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(s)])).code, s);
+  assert.equal(decodeSource(Buffer.from([0x76, 0x3d, 0x27, 0xe9, 0x80, 0x27])).code, "v='é€'");
+  assert.throws(() => decodeSource(Buffer.from('#@~^MwAAAA==abc^#~@')), /JScript\.Encode/);
+});

@@ -4,6 +4,7 @@ import { parseArgs } from 'node:util';
 import { deobfuscate, ALL_MODULES } from '../src/index.js';
 import { SANDBOX_FLAGS } from '../src/sandbox/runner.js';
 import { extractBlobs } from '../src/blobs.js';
+import { decodeSource, describeParseError, InputError } from '../src/input.js';
 
 const HELP = `untangle - JavaScript deobfuscator for malware reversing
 
@@ -70,7 +71,16 @@ if (o['list-modules']) {
 }
 if (args.positionals.length !== 1) { console.error(HELP); process.exit(2); }
 
-const input = args.positionals[0] === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(args.positionals[0], 'utf8');
+const raw = args.positionals[0] === '-' ? fs.readFileSync(0) : fs.readFileSync(args.positionals[0]);
+let input;
+try {
+  const decoded = decodeSource(raw);
+  input = decoded.code;
+  if (o.verbose || !decoded.encoding.startsWith('utf-8')) console.error(`input encoding: ${decoded.encoding}`);
+} catch (err) {
+  if (err instanceof InputError) { console.error(`untangle: ${err.message}`); process.exit(1); }
+  throw err;
+}
 const known = new Set(ALL_MODULES.map((m) => m.name));
 const disable = (o.disable || '').split(',').map((s) => s.trim()).filter(Boolean);
 for (const d of disable) if (!known.has(d)) { console.error(`unknown module: ${d}`); process.exit(2); }
@@ -90,7 +100,7 @@ try {
     },
   });
 } catch (err) {
-  console.error(`untangle: ${err.message}`);
+  console.error(`untangle: ${describeParseError(err, input)}`);
   process.exit(1);
 }
 

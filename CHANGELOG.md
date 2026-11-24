@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- Input decoding: UTF-16 LE/BE (with or without BOM), UTF-8 BOM, and Windows-1252 for files that
+  are not valid UTF-8 (WSH runs all of these). Previously such files failed with
+  `Unexpected character '\uFFFD'`.
+- JScript.Encode (`#@~^...^#~@`) scripts are detected and reported instead of failing to parse.
+- Parse errors now report line, column, the offending code point and the surrounding text.
+
 ## 0.2.0
 
 - WSH / JScript dropper support:

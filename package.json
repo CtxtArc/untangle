@@ -1,6 +1,6 @@
 {
   "name": "untangle",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "JavaScript deobfuscator for malware reversing: restringer-style AST transforms plus sandboxed evaluation",
   "keywords": [
     "deobfuscator",
@@ -26,7 +26,8 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./blobs": "./src/blobs.js"
+    "./blobs": "./src/blobs.js",
+    "./input": "./src/input.js"
   },
   "bin": {
     "untangle": "bin/untangle.js"

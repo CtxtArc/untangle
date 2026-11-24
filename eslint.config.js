@@ -6,7 +6,7 @@ export default [
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
-      globals: { process: 'readonly', Buffer: 'readonly', console: 'readonly', URL: 'readonly' },
+      globals: { process: 'readonly', Buffer: 'readonly', console: 'readonly', URL: 'readonly', TextDecoder: 'readonly' },
     },
     rules: {
       'no-undef': 'error',
