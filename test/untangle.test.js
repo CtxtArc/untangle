@@ -280,3 +280,23 @@ test('static builtin folding: literal string ops only, never regex, never mutati
     assert.match(out, /y = a\.join\(\)/, `mutated array must not be folded (dynamic=${dynamic})`);
   }
 });
+
+test('self-feeding junk variable: removed when only it reads itself, kept when really used', () => {
+  const K = '"k"';
+  const junk = [
+    `if (/k/.test(p || "")) { p += ${K}; } else { p = ${K}; }`,
+    `try { p = p.concat(${K}); } catch (e) { p = ${K}; }`,
+    `switch (typeof p) { case "string": p += ${K}; break; default: p = ${K}; }`,
+    `p = (function (q) { return (q || "") + ${K}; })(p);`,
+    `p = (p && p.indexOf(${K}) !== -1) ? p + ${K} : ${K};`,
+    `var p = ${K}; p = String(p || "").concat(p);`,
+    `var p = [p || "", ${K}]; p = p.join("");`,
+    `for (var p = 0; p < 1; p++) { p = (p || "") + ${K}; }`,
+  ].join('\n');
+  const wrap = (tail) => `function f() {\n${junk}\n${tail}\n}\nf();`;
+  assert.equal(deobfuscate(wrap('run("x");')).code, norm('function f() { run("x"); } f();'));
+  assert.match(deobfuscate(wrap('run(p);')).code, /concat/);
+  // a write to anything else, or a call with effects, keeps the statement
+  assert.match(deobfuscate(wrap('if (p) { other = 1; } run("x");')).code, /other = 1/);
+  assert.match(deobfuscate(wrap('p = p + log(); run("x");')).code, /log\(\)/);
+});

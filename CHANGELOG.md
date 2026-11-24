@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1
+
+- `removeDeadCode`: removes self-feeding junk variables, where every read only feeds the next
+  write to the same variable (`if (/k/.test(v)) v += "k"; else v = "k";`,
+  `try { v = v.concat("k") } catch (e) { v = "k" }`, `switch (typeof v) ...`,
+  `for (var v = 0; v < 1; v++) ...`, `v = (function (p) { return p + "k" })(v)`). Whole
+  `if`/`try`/`switch`/`for` statements go only when nothing in them has another side effect;
+  if the variable is read anywhere else, everything is kept.
+
 ## 0.4.0
 
 **Breaking: static by default.** Nothing from the input is executed unless `--dyn` is given
