@@ -37,6 +37,7 @@ export default {
       targets.push(arg);
     }
     if (!targets.length) return 0;
+    if (ctx.options.planOnly) { ctx.planned = targets.length; return 0; } // static mode: count, never run
     const [res] = runJobs([{ prelude: '', exprs: targets.map((t) => generate(t)) }], ctx.options.sandbox);
     if (!res || res.error) { ctx.log(`resolveEvalArguments: ${res && res.error}`); return 0; }
     res.values.forEach((r, i) => {

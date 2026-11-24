@@ -32,6 +32,7 @@ export default {
       return true;
     });
     if (!outer.length) return 0;
+    if (ctx.options.planOnly) { ctx.planned = outer.length; return 0; } // static mode: count, never run
     const exprs = outer.map((c) => generate(materialize(c, ctx.cache)));
     const [res] = runJobs([{ prelude: '', exprs }], ctx.options.sandbox);
     if (!res || res.error) { ctx.log(`resolveBuiltinCalls: ${res && res.error}`); return 0; }

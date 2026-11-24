@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0
+
+**Breaking: static by default.** Nothing from the input is executed unless `--dyn` is given
+(library: `dynamic: true`; the old `unsafe` option is still honoured). In static mode the
+sandboxed modules only count what they would evaluate, and the CLI reports it:
+`static mode: 23 decoder calls left as-is; rerun with --dyn ...`. `--safe` is now the default
+and kept as a no-op for compatibility.
+
+- `foldBuiltinCalls` (static): string/array/number builtins on literal data (`split/join/
+  reverse`, `fromCharCode`, `atob`, `parseInt`, `unescape`, `Math.*`, ...) are folded in-process
+  by a whitelist interpreter. No `eval`; regex arguments and callbacks are refused (left to
+  `--dyn`); `repeat`/`padStart` sizes are capped.
+- Fix: a mutating method on a variable (`a.reverse()`) is never folded, and an array-valued
+  constant is only treated as known when no use can mutate or leak it. Previously
+  `var a=[3,1,2]; a.reverse(); y = a.join()` could fold `y` to the unreversed value, in both modes.
+
 ## 0.3.0
 
 - `resolveConstantLoops` (sandbox): evaluates self-contained decode loops

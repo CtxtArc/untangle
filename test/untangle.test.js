@@ -7,7 +7,8 @@ import { generate } from '../src/codegen.js';
 import { parse } from '../src/ast.js';
 
 const norm = (code) => generate(parse(code).ast);
-const deob = (code, opts) => deobfuscate(code, opts).code;
+// most tests exercise the full pipeline; static-only behaviour is tested explicitly below
+const deob = (code, opts) => deobfuscate(code, { dynamic: true, ...opts }).code;
 const same = (input, expected, opts) => assert.equal(deob(input, opts), norm(expected));
 const unchanged = (input, opts) => same(input, input, opts);
 
@@ -90,7 +91,7 @@ test('eval and Function shells', () => {
 test('builtin calls on literals', () => {
   same("x = 'dlrow'.split('').reverse().join('') + String.fromCharCode(33) + atob('aGk=') + parseInt('0x1f');",
     "x = 'world!hi31';");
-  unchanged("x = 'abc'.split('');", { unsafe: false });
+  unchanged("x = 'aaa'.replace(/a+/g, 'b');", { dynamic: false }); // regex: sandbox only
 });
 
 test('decoder calls: deterministic, side-effect free only', () => {
@@ -101,7 +102,7 @@ test('decoder calls: deterministic, side-effect free only', () => {
   // non-deterministic
   assert.match(deob('function r(k) { var t = Math.random(); return t * k; } x = r(1);'), /r\(1\)/);
   // safe mode never evaluates
-  assert.match(deob("function d(i) { var t = ['a']; return t[i]; } x = d(0);", { unsafe: false }), /d\(0\)/);
+  assert.match(deob("function d(i) { var t = ['a']; return t[i]; } x = d(0);", { dynamic: false }), /d\(0\)/);
 });
 
 test('sandbox has no host access', () => {
@@ -237,7 +238,7 @@ test('constant loops: only self-contained, deterministic loops are evaluated', (
   // loop variable used afterwards
   assert.match(deob("function f() { var o = ''; for (var i = 0; i < 3; i++) { o += 'x'; } return o + i; } g(f);"), /for \(/);
   // safe mode never evaluates
-  assert.match(deob("function f() { var o = ''; for (var i = 0; i < 3; i++) { o += 'x'; } return o; } g(f);", { unsafe: false }), /for \(/);
+  assert.match(deob("function f() { var o = ''; for (var i = 0; i < 3; i++) { o += 'x'; } return o; } g(f);", { dynamic: false }), /for \(/);
 });
 
 test('global this.X junk: removed only when never read', () => {
@@ -252,4 +253,30 @@ test('unreachable code after return / WScript.Quit()', () => {
   same('function f() { a(); return 1; b(); } h(f);', 'function f() { a(); return 1; } h(f);');
   same('function f() { WScript.Quit(); if (z) { d(); } } h(f);', 'function f() { WScript.Quit(); } h(f);');
   unchanged('function f(WScript) { WScript.Quit(); more(); } h(f);');
+});
+
+test('static by default: nothing runs without dynamic, pending work is reported', () => {
+  const src = fs.readFileSync(new URL('../samples/obfuscated.js', import.meta.url), 'utf8');
+  const r = deobfuscate(src);
+  assert.equal(r.dynamic, false);
+  assert.match(r.code, /_0x4f1e\(/); // decoder calls untouched
+  assert.ok(r.pending.resolveDecoderCalls > 0);
+  const d = deobfuscate(src, { dynamic: true });
+  assert.deepEqual(d.pending, {});
+  assert.doesNotMatch(d.code, /_0x4f1e/);
+  // pre-0.4 option name still works
+  assert.doesNotMatch(deobfuscate(src, { unsafe: true }).code, /_0x4f1e/);
+});
+
+test('static builtin folding: literal string ops only, never regex, never mutating a shared array', () => {
+  const st = (c) => deobfuscate(c).code;
+  assert.equal(st("x = 'dlrow'.split('').reverse().join('') + String.fromCharCode(33) + atob('aGk=');"), norm("x = 'world!hi';"));
+  assert.equal(st("var b = 'a#b'; use(b.split('#').join(''));"), norm("use('ab');"));
+  assert.match(st("x = 'aaa'.replace(/a+/g, 'b');"), /replace\(\/a\+\/g/);
+  assert.match(st("x = 'x'.repeat(1e9);"), /repeat/);
+  assert.match(st("x = 'abc'.replace('b', function () { return evil(); });"), /evil/);
+  for (const dynamic of [false, true]) {
+    const out = deobfuscate('var a = [3,1,2]; x = a.reverse().join(); y = a.join(); r(x, y);', { dynamic }).code;
+    assert.match(out, /y = a\.join\(\)/, `mutated array must not be folded (dynamic=${dynamic})`);
+  }
 });

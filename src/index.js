@@ -1,7 +1,9 @@
 // untangle - restringer-style JavaScript deobfuscator.
 //
-// The engine runs every safe module repeatedly until the code stops changing, then the
-// sandboxed (unsafe) modules once, and repeats while anything changes. After every module
+// The engine runs every static module repeatedly until the code stops changing. Only when
+// `dynamic: true` is given does it then run the sandboxed modules (which execute fragments of the
+// sample) once, and repeat while anything changes. Without it, the sandboxed modules are only
+// asked what they *would* evaluate, and that count is returned as `pending`. After every module
 // that changed something, the code is regenerated and re-parsed so the next module sees
 // fresh parent links and scope information.
 import { createHash } from 'node:crypto';
@@ -20,6 +22,7 @@ import unflattenControlFlow from './modules/safe/unflattenControlFlow.js';
 import unwrapEval from './modules/safe/unwrapEval.js';
 import splitSequences from './modules/safe/splitSequences.js';
 import splitJoinConcat from './modules/safe/splitJoinConcat.js';
+import foldBuiltinCalls from './modules/safe/foldBuiltinCalls.js';
 import splitRedeclarations from './modules/safe/splitRedeclarations.js';
 import removeUnreachable from './modules/safe/removeUnreachable.js';
 import { cleanup, removeDeadCode } from './modules/safe/cleanup.js';
@@ -41,6 +44,7 @@ export const SAFE_MODULES = [
   inlineProxyFunctions,
   unflattenControlFlow,
   unwrapEval,
+  foldBuiltinCalls,
   splitJoinConcat,
   removeUnreachable,
   removeDeadCode,
@@ -52,7 +56,7 @@ export const UNSAFE_MODULES = [resolveBuiltinCalls, resolveEvalArguments, resolv
 export const ALL_MODULES = [...SAFE_MODULES, ...UNSAFE_MODULES];
 
 const DEFAULTS = {
-  unsafe: true,
+  dynamic: false, // never execute sample code unless explicitly asked
   maxIterations: 100,
   removeDeadCode: true,
   keepGlobals: false,
@@ -68,6 +72,7 @@ const defined = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, v])
 
 export function deobfuscate(code, userOptions = {}) {
   const user = defined(userOptions);
+  if (user.dynamic === undefined && user.unsafe !== undefined) user.dynamic = user.unsafe; // pre-0.4 option name
   const options = { ...DEFAULTS, ...user, sandbox: { ...DEFAULTS.sandbox, ...defined(user.sandbox) } };
   const log = options.verbose ? options.log : () => {};
   const disabled = new Set(options.disable);
@@ -121,13 +126,28 @@ export function deobfuscate(code, userOptions = {}) {
       if (seen.has(h)) break; // oscillation guard
       seen.add(h);
     }
-    if (!options.unsafe) break;
+    if (!options.dynamic) break;
     let changed = 0;
     for (const mod of UNSAFE_MODULES) changed += runModule(mod);
     if (!changed) break;
   }
 
-  return { code: tree.code, original, changed: hash(tree.code) !== hash(original), iterations, stats };
+  // static mode: report what the sandboxed modules would have evaluated, without running anything
+  const pending = {};
+  if (!options.dynamic) {
+    for (const mod of UNSAFE_MODULES) {
+      if (disabled.has(mod.name)) continue;
+      const ctx = new Context(tree, { ...options, planOnly: true }, log);
+      try {
+        mod.run(ctx);
+      } catch (err) {
+        log(`[${mod.name}] planning failed: ${err.message}`);
+      }
+      if (ctx.planned) pending[mod.name] = ctx.planned;
+    }
+  }
+
+  return { code: tree.code, original, changed: hash(tree.code) !== hash(original), iterations, stats, pending, dynamic: options.dynamic };
 }
 
 export { Tree };

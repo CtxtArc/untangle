@@ -25,5 +25,7 @@ jobs:
       - name: CLI smoke test
         run: |
           ./bin/untangle.js --list-modules
-          ./bin/untangle.js --stats samples/obfuscated.js -o /tmp/out.js
+          ./bin/untangle.js samples/obfuscated.js -o /tmp/static.js
+          grep -q "_0x4f1e(" /tmp/static.js        # static default: decoders untouched
+          ./bin/untangle.js --dyn --stats samples/obfuscated.js -o /tmp/out.js
           ! grep -q "_0x4f1e" /tmp/out.js

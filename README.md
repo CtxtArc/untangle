@@ -9,7 +9,7 @@ targeted transformation modules until the code stops changing, and evaluate the 
 that can only be resolved by running them inside a sandbox.
 
 ```
-$ untangle samples/obfuscated.js
+$ untangle --dyn samples/obfuscated.js
 function collect() {
   const _0x7a1b = {
     ua: navigator.userAgent,
@@ -43,8 +43,8 @@ git clone https://github.com/CtxtArc/untangle && cd untangle
 npm install
 npm test
 
-./bin/untangle.js sample.js -o clean.js --stats
-./bin/untangle.js --safe sample.js                  # static transforms only, never runs sample code
+./bin/untangle.js sample.js -o clean.js --stats     # static only: nothing from the sample runs
+./bin/untangle.js --dyn sample.js -o clean.js       # also evaluate decoders/loops in the sandbox (isolated VM!)
 ./bin/untangle.js dropper.js --extract-blobs blobs  # also pull embedded payloads out to files
 cat sample.js | ./bin/untangle.js -
 ```
@@ -55,18 +55,22 @@ As a library:
 
 ```js
 import { deobfuscate } from 'untangle';
-const { code, stats, iterations } = deobfuscate(src, { unsafe: true });
+const { code, stats, pending } = deobfuscate(src);                 // static only
+const full = deobfuscate(src, { dynamic: true });                  // + sandboxed evaluation
 ```
 
 Payload extraction from code: `import { extractBlobs } from 'untangle/blobs'`.
 
-Options: `unsafe` (default `true`), `maxIterations`, `removeDeadCode`, `keepGlobals`,
+`pending` lists, per sandboxed module, how many evaluations static mode skipped.
+
+Options: `dynamic` (default `false`), `maxIterations`, `removeDeadCode`, `keepGlobals`,
 `disable: ['moduleName']`, `verbose`, `sandbox: { timeout, preludeTimeout, checkSideEffects }`.
 
 ## Modules
 
-`untangle --list-modules` lists them. Static modules run to a fixpoint first, then the
-sandboxed modules run once, and the cycle repeats while anything changes.
+`untangle --list-modules` lists them. Static modules run to a fixpoint. With `--dyn`, the
+sandboxed modules then run once and the cycle repeats while anything changes; without it they
+only report what they would have evaluated.
 
 | module | does |
 |---|---|
@@ -82,16 +86,17 @@ sandboxed modules run once, and the cycle repeats while anything changes.
 | `inlineProxyFunctions` | single-`return` wrappers: `w('k', 0x20)` → `dec(0x20 - 0x1a, 'k')` |
 | `unflattenControlFlow` | `'2\|0\|1'.split('\|')` + `while(true) switch(o[i++])` dispatchers → straight-line code |
 | `unwrapEval` | `eval('code')` → code, `Function('code')()` → IIFE (only when no local would be captured) |
+| `foldBuiltinCalls` | static: `'dlrow'.split('').reverse().join('')`, `blob.split('♉').join('')`, `String.fromCharCode(…)`, `atob`, `parseInt`, … on literal data, via a whitelist interpreter (no regex arguments, no callbacks, size caps) |
 | `splitJoinConcat` ⚠ | `(folder + '\\♉♉ev♉♉il.exe').split('♉♉').join('')` → `folder + '\\evil.exe'` |
 | `removeUnreachable` | statements after `return` / `throw` / `break` / `continue` / `WScript.Quit()` |
 | `removeDeadCode` | unused bindings, even when declared many times, plus statements that only write to them (`junk += '…'`, `obj[k] = {…}`, `x.k++`), and never-read `this.NAME = …` globals; all-or-nothing |
 | `cleanup` | empty statements, no-op expressions, nested blocks |
-| `resolveBuiltinCalls` 🔒 | `'dlrow'.split('').reverse().join('')`, `String.fromCharCode(...)`, `atob`, `parseInt`, `Math.*`; follows constant variables, so a 12-step `a.split('?').join('')` chain resolves in one evaluation |
+| `resolveBuiltinCalls` 🔒 | what `foldBuiltinCalls` refuses (e.g. regex arguments), in the sandbox; follows constant variables, so a 12-step `a.split('?').join('')` chain resolves in one evaluation |
 | `resolveConstantLoops` 🔒 | `var out = ''; for (…) out += String.fromCharCode(parseInt(blob.substr(i, 2), 16) ^ key.charCodeAt(…))` → `var out = '<decoded>'` |
 | `resolveEvalArguments` 🔒 | `eval(function(p,a,c,k,e,d){...}(...))` (Dean Edwards packer), `eval(atob(...))` |
 | `resolveDecoderCalls` 🔒 | string-array decoders: evaluates calls with literal arguments together with their context |
 
-🔒 = evaluates code from the sample inside the sandbox. ⚠ = heuristic: exact only if the runtime
+🔒 = evaluates code from the sample inside the sandbox; only with `--dyn`. ⚠ = heuristic: exact only if the runtime
 part of the concatenation never contains a separator character; it only fires for separators
 without letters or digits that actually occur in the literals. `--disable splitJoinConcat` turns it off.
 
@@ -104,7 +109,7 @@ and LuaJIT bytecode, text) and replaces the literal in the output with a placeho
 SHA-256. `manifest.json` lists everything. Nothing extracted is executed.
 
 ```
-$ untangle dropper.js --extract-blobs blobs -o clean.js
+$ untangle --dyn dropper.js --extract-blobs blobs -o clean.js
 blob 1: PE x64 EXE, timestamp 2025-01-01, 31800 bytes, sha256 <64 hex> -> blob1_<sha12>.bin
 blob 2: text, 1173848 bytes, sha256 <64 hex> -> blob2_<sha12>.txt
 ...
@@ -133,7 +138,10 @@ so shadowing, reassignment, hoisting/TDZ, argument evaluation order, recursion, 
 and `__proto__`/`constructor` keys are all checked before anything is rewritten. When a
 module produces code that does not parse, it is reverted and disabled for the rest of the run.
 
-**Sandbox:** evaluation happens in a separate `node` process started with the permission
+**Static by default:** without `--dyn` nothing from the input is executed; untangle only parses,
+rewrites and folds literal data with a whitelist interpreter.
+
+**Sandbox (`--dyn`):** evaluation happens in a separate `node` process started with the permission
 model (`--permission`: no filesystem writes, no child processes, workers or addons), an
 empty environment and a memory cap. Inside that process the code runs in a `vm` context
 whose global is a null-prototype object, so the classic
@@ -142,7 +150,7 @@ has a timeout.
 
 **This is defense in depth, not a security boundary.** Node's permission model does not
 restrict network access, and `vm` is not designed to contain hostile code. Run untangle
-on live samples inside a disposable analysis VM, or use `--safe`.
+with `--dyn` on live samples only inside a disposable analysis VM.
 
 ## Known limits / next steps
 

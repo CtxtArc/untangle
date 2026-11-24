@@ -12,7 +12,9 @@ Usage: untangle [options] <input.js | ->
 
 Options:
   -o, --output <file>       write result to file (default: stdout)
-  -s, --safe                only static transforms, never evaluate sample code
+      --dyn                 also run the sandboxed modules, which EXECUTE fragments of the sample
+                            (decoders, builtin calls, decode loops, packer bodies). Off by default.
+  -s, --safe                static transforms only (the default; kept for compatibility)
       --max-iterations <n>  iteration cap (default 100)
       --keep-globals        do not remove unused top-level declarations
       --no-dead-code        do not remove unused declarations at all
@@ -28,9 +30,10 @@ Options:
       --version             print the version
   -h, --help                show this help
 
-WARNING: unless --safe is given, parts of the input are executed inside a sandbox
-(separate Node process, permission model${SANDBOX_FLAGS.length ? '' : ' UNAVAILABLE on this Node'}, vm context with no host objects).
-That is defense in depth, not a security boundary: work on hostile samples in a VM.`;
+By default nothing from the input is executed: untangle only parses and rewrites it, and reports
+what --dyn could additionally resolve. With --dyn, fragments run in a sandbox (separate Node
+process, permission model${SANDBOX_FLAGS.length ? '' : ' UNAVAILABLE on this Node'}, vm context with no host objects). That is defense in
+depth, not a security boundary: only use --dyn on hostile samples inside an isolated VM.`;
 
 let args;
 try {
@@ -39,6 +42,7 @@ try {
     options: {
       output: { type: 'string', short: 'o' },
       safe: { type: 'boolean', short: 's' },
+      dyn: { type: 'boolean' },
       'max-iterations': { type: 'string' },
       'keep-globals': { type: 'boolean' },
       'no-dead-code': { type: 'boolean' },
@@ -70,6 +74,7 @@ if (o['list-modules']) {
   process.exit(0);
 }
 if (args.positionals.length !== 1) { console.error(HELP); process.exit(2); }
+if (o.safe && o.dyn) { console.error('untangle: --safe and --dyn are mutually exclusive'); process.exit(2); }
 
 const raw = args.positionals[0] === '-' ? fs.readFileSync(0) : fs.readFileSync(args.positionals[0]);
 let input;
@@ -88,7 +93,7 @@ for (const d of disable) if (!known.has(d)) { console.error(`unknown module: ${d
 let result;
 try {
   result = deobfuscate(input, {
-    unsafe: !o.safe,
+    dynamic: !!o.dyn,
     maxIterations: o['max-iterations'] ? Number(o['max-iterations']) : undefined,
     keepGlobals: !!o['keep-globals'],
     removeDeadCode: !o['no-dead-code'],
@@ -113,6 +118,18 @@ if (o['extract-blobs']) {
 
 if (o.output) fs.writeFileSync(o.output, out + '\n');
 else process.stdout.write(out + '\n');
+
+const MODULE_UNITS = {
+  resolveBuiltinCalls: 'builtin call',
+  resolveEvalArguments: 'eval/Function argument',
+  resolveConstantLoops: 'decode loop',
+  resolveDecoderCalls: 'decoder call',
+};
+const pending = Object.entries(result.pending || {});
+if (!result.dynamic && pending.length) {
+  const what = pending.map(([m, n]) => `${n} ${MODULE_UNITS[m] || m}${n > 1 ? 's' : ''}`).join(', ');
+  console.error(`static mode: ${what} left as-is; rerun with --dyn to evaluate them (executes sample code: isolated VM only)`);
+}
 
 if (o.stats || o.verbose) {
   console.error(`iterations: ${result.iterations}`);

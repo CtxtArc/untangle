@@ -149,6 +149,7 @@ export default {
     }
     if (!plans.length) return 0;
 
+    if (ctx.options.planOnly) { ctx.planned = plans.reduce((n, p) => n + p.calls.length, 0); return 0; } // static mode: count, never run
     const jobs = plans.map((p) => ({ prelude: preludeOf(p.context.stmts), exprs: p.calls.map((c) => generate(c)) }));
     const results = runJobs(jobs, ctx.options.sandbox);
 

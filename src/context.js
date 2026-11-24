@@ -10,6 +10,7 @@ export class Context {
     this.options = options;
     this.log = log;
     this.count = 0;
+    this.planned = 0; // planOnly: how many evaluations a sandboxed module would have run
     this.touched = new WeakSet();
     this.dirty = new WeakSet();
   }

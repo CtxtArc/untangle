@@ -17,6 +17,9 @@ const METHODS = new Set([
   'toFixed', 'toPrecision',
 ]);
 
+// methods that mutate their receiver: never folded on a variable (other references would see the change)
+export const MUTATING_METHODS = new Set(['reverse', 'sort', 'fill', 'splice', 'push', 'pop', 'shift', 'unshift', 'copyWithin']);
+
 const GLOBAL_FNS = new Set(['parseInt', 'parseFloat', 'String', 'Number', 'Boolean', 'decodeURIComponent', 'decodeURI',
   'encodeURIComponent', 'encodeURI', 'escape', 'unescape', 'atob', 'btoa', 'isNaN', 'isFinite']);
 
@@ -29,13 +32,35 @@ const GLOBAL_METHODS = {
 
 const isGlobal = (n, name) => n.type === 'Identifier' && !n.variable && !n.isDecl && (!name || n.name === name);
 
+const READ_ONLY_METHODS = new Set([...METHODS].filter((m) => !['reverse'].includes(m)));
+
+/** An array-valued binding is only a known value if no use can change or leak the array. */
+function arrayStaysConstant(v, cache) {
+  return v.references.every((r) => {
+    if (r.init) return true;
+    const m = r.identifier.parent;
+    if (!m || m.type !== 'MemberExpression' || m.object !== r.identifier) return false; // passed / aliased somewhere
+    const name = propName(m, cache);
+    if (name === NOT) return false;
+    const p = m.parent;
+    if ((p.type === 'AssignmentExpression' && p.left === m) || p.type === 'UpdateExpression' ||
+        (p.type === 'UnaryExpression' && p.operator === 'delete')) return false;
+    if (p.type === 'CallExpression' && p.callee === m) return READ_ONLY_METHODS.has(name) && !MUTATING_METHODS.has(name);
+    return name === 'length' || /^\d+$/.test(name);
+  });
+}
+
 /** Constant binding whose initializer is itself a known value / builtin computation. */
 function constInit(id, cache, memo) {
   const v = id.variable;
   if (!v || !id.reference || id.reference.isWrite()) return null;
   const d = declarator(v);
   if (!d || !d.init || d.id.type !== 'Identifier' || !isConstVariable(v) || readBeforeDeclaration(v)) return null;
-  return isBuiltinValue(d.init, cache, memo) ? d.init : null;
+  if (!isBuiltinValue(d.init, cache, memo)) return null;
+  const sv = staticValue(d.init, cache);
+  const maybeArray = sv === NOT ? !/^(Literal|TemplateLiteral|BinaryExpression)$/.test(d.init.type) : Array.isArray(sv);
+  if (maybeArray && !arrayStaysConstant(v, cache)) return null;
+  return d.init;
 }
 
 /** Is `node` a value we can compute without side effects (given the sandbox's builtins)? */
@@ -54,7 +79,8 @@ export function isBuiltinValue(node, cache, memo = new Map()) {
       const name = propName(cal, cache);
       if (name !== NOT) {
         if (isGlobal(cal.object) && GLOBAL_METHODS[cal.object.name] && GLOBAL_METHODS[cal.object.name].has(name)) ok = true;
-        else if (METHODS.has(name) && !isGlobal(cal.object) && isBuiltinValue(cal.object, cache, memo)) ok = true;
+        else if (METHODS.has(name) && !isGlobal(cal.object) && !(MUTATING_METHODS.has(name) && cal.object.type === 'Identifier') &&
+          isBuiltinValue(cal.object, cache, memo)) ok = true;
         // String.fromCharCode.apply(null, [104, 105])
         else if (name === 'apply' && cal.object.type === 'MemberExpression' && isGlobal(cal.object.object, 'String') &&
           propName(cal.object, cache) === 'fromCharCode') ok = true;

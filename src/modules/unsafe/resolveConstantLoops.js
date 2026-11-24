@@ -93,6 +93,7 @@ export default {
       plans.push({ d, loop, code, R });
     }
     if (!plans.length) return 0;
+    if (ctx.options.planOnly) { ctx.planned = plans.length; return 0; } // static mode: count, never run
     const [res] = runJobs([{ prelude: '', exprs: plans.map((p) => p.code) }], ctx.options.sandbox);
     if (!res || res.error) { ctx.log(`resolveConstantLoops: ${res && res.error}`); return 0; }
     res.values.forEach((r, i) => {
