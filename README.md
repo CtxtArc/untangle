@@ -4,11 +4,8 @@
 
 <p align="center">
   <a href="https://github.com/CtxtArc/untangle/actions"><img src="https://github.com/CtxtArc/untangle/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/license-MIT-5EE6A0" alt="MIT">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT">
 </p>
-
-[![CI](https://github.com/CtxtArc/untangle/actions/workflows/ci.yml/badge.svg)](https://github.com/CtxtArc/untangle/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A JavaScript deobfuscator for malware reversing, built the way
 [restringer](https://github.com/HumanSecurity/restringer) is: parse to an AST, run small
