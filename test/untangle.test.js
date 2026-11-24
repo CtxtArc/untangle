@@ -39,7 +39,8 @@ test('sequence splitting', () => {
 test('constant inlining respects reassignment, hoisting and shadowing', () => {
   same("var s = 'x'; f(s);", "f('x');");
   unchanged("var s = 'x'; if (c) { s = g(); } f(s);");
-  same("var s = 'x'; s = g(); f(s);", 'var s_1 = g(); f(s_1);'); // straight-line reassignment: new binding
+  same("var s = 'x'; s = g(); f(s);", 'f(g());'); // straight-line reassignment: new binding, then a single-use temp
+  same("var s = 'x'; s = g(); h(); f(s);", 'var s_1 = g(); h(); f(s_1);'); // h() in between: stays a binding
   unchanged("f(s); var s = 'x';", { removeDeadCode: false });
   same("var s = 'x'; function g(s) { return s; } h(g, s);", "function g(s) { return s; } h(g, 'x');");
 });
@@ -100,17 +101,19 @@ test('decoder calls: deterministic, side-effect free only', () => {
   const se = 'var n = 0; function f(k) { n++; return k; } x = f(1); report(n);';
   assert.match(deob(se), /f\(1\)/);
   // non-deterministic
-  assert.match(deob('function r(k) { var t = Math.random(); return t * k; } x = r(1);'), /r\(1\)/);
+  const nd = deob('function r(k) { var t = Math.random(); return t * k; } x = r(1);');
+  assert.match(nd, /Math\.random\(\)/); // inlined, never evaluated
+  assert.doesNotMatch(nd, /x = [\d.]+;/);
   // safe mode never evaluates
-  assert.match(deob("function d(i) { var t = ['a']; return t[i]; } x = d(0);", { dynamic: false }), /d\(0\)/);
+  assert.match(deob("function d(i) { var s = ''; for (var j = 0; j < i; j++) { s += 'a'; } return s; } x = d(2);", { dynamic: false }), /d\(2\)/);
 });
 
 test('sandbox has no host access', () => {
   const code = "function p(k) { var P = this.constructor.constructor('return process')(); return typeof P + k; } x = p(1);" +
-    "function q(k) { var t = typeof require + typeof process; return t + k; } y = q('!');";
+    "function q(k) { var t = ''; for (var i = 0; i < 2; i++) { t += typeof require; } return t + typeof process + k; } y = q('!');";
   const out = deob(code);
   assert.match(out, /x = p\(1\)/); // ReferenceError inside the sandbox -> left alone
-  assert.match(out, /y = 'undefinedundefined!'/);
+  assert.match(out, /y = 'undefinedundefinedundefined!'/);
 });
 
 // ---------- end to end ----------
@@ -294,7 +297,7 @@ test('self-feeding junk variable: removed when only it reads itself, kept when r
     `for (var p = 0; p < 1; p++) { p = (p || "") + ${K}; }`,
   ].join('\n');
   const wrap = (tail) => `function f() {\n${junk}\n${tail}\n}\nf();`;
-  assert.equal(deobfuscate(wrap('run("x");')).code, norm('function f() { run("x"); } f();'));
+  assert.equal(deobfuscate(wrap('run("x");')).code, norm('run("x");')); // junk gone, then the wrapper inlines
   assert.match(deobfuscate(wrap('run(p);')).code, /concat/);
   // a write to anything else, or a call with effects, keeps the statement
   assert.match(deobfuscate(wrap('if (p) { other = 1; } run("x");')).code, /other = 1/);
@@ -335,4 +338,29 @@ test('literal append runs merge before SSA; huge and deep chains stay fast and n
   const r2 = st(dyn + 'use(s);');
   assert.deepEqual(r2.problems, []);
   assert.ok(Date.now() - t0 < 20000);
+});
+
+test('dead array mutations, single-use temps, statement-body proxies', () => {
+  const st = (c) => deobfuscate(c).code;
+  // junk arrays only ever mutated in place
+  assert.equal(st('var a = [1]; a.push(2); a.unshift("x"); a.reverse(); function f() { a.push(3); } f(); go();'), norm('go();'));
+  assert.match(st('var a = []; a.push(1); use(a);'), /a\.push\(1\)/);                       // really read
+  assert.match(st('var a = b; a.push(1);'), /\.push\(1\)/);                                     // may alias b
+  assert.match(st('var a = [2, 1]; a.sort(function (x, y) { log(); return x - y; });'), /log\(\)/); // callback runs
+  assert.match(st('var a = []; a.push(f());'), /f\(\)/);                                       // argument has effects
+  // single-use temporaries
+  assert.equal(st('t = dec(x); eval2(t);'), norm('eval2(dec(x));'));
+  assert.equal(st('function g(a) { var r = f(a); return r; } use(g);'), norm('function g(a) { return f(a); } use(g);'));
+  assert.match(st('t = f(); g(h(), t);'), /t = f\(\)/);           // h() would run first
+  assert.match(st('t = f(); if (c) { use(t); }'), /t = f\(\)/);    // read under a branch
+  assert.match(st('t = f(); other(); use(t);'), /t = f\(\)/);      // not adjacent
+  assert.match(st('t = f(); use(t); use(t);'), /t = f\(\)/);       // read twice
+  assert.match(st('t = f(); use(t); this[k]();'), /t = f\(\)/);    // globals reachable by name
+  assert.match(st('t = f(); use(n, t); n = 1;'), /t = f\(\)/);     // n is written somewhere
+  assert.equal(st('t = f(); use(1, t); n = 2;'), norm('use(1, f()); n = 2;'));
+  // statement-body proxies
+  assert.equal(st('function w(p) { log(p); } w(1); w(2);'), norm('log(1); log(2);'));
+  assert.match(st('function w(p) { log(p); } x = w(1);'), /w\(1\)/);        // result used: undefined, keep
+  assert.match(st("function w(p) { var k = 1; eval(p); } w('k');"), /function w/); // eval sees a local
+  assert.equal(st("function w(p) { eval(p); } w('go()');"), norm('go();'));
 });

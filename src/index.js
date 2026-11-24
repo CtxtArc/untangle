@@ -16,6 +16,7 @@ import simplifyBranches from './modules/safe/simplifyBranches.js';
 import inlineConstants from './modules/safe/inlineConstants.js';
 import resolveMemberAccess from './modules/safe/resolveMemberAccess.js';
 import inlineProxyVariables from './modules/safe/inlineProxyVariables.js';
+import inlineSingleUseTemps from './modules/safe/inlineSingleUseTemps.js';
 import inlineProxyFunctions from './modules/safe/inlineProxyFunctions.js';
 import resolveProxyObjects from './modules/safe/resolveProxyObjects.js';
 import unflattenControlFlow from './modules/safe/unflattenControlFlow.js';
@@ -44,6 +45,7 @@ export const SAFE_MODULES = [
   inlineConstants,
   resolveMemberAccess,
   inlineProxyVariables,
+  inlineSingleUseTemps,
   resolveProxyObjects,
   inlineProxyFunctions,
   unflattenControlFlow,

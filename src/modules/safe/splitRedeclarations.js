@@ -1,4 +1,5 @@
 import { isInside } from '../../utils.js';
+import { evalCanSee } from './cleanup.js';
 
 // Give each re-definition of a `var` its own name when the definitions are straight-line:
 //   var s = 'a'; use(s); var s = 'b'; use(s);   ->   var s = 'a'; use(s); var s_1 = 'b'; use(s_1);
@@ -34,6 +35,7 @@ export default {
     const { tree } = ctx;
     let names = null;
     for (const scope of tree.scopeManager.scopes) {
+      if (evalCanSee(scope)) continue; // renaming would break eval'd code that uses the name
       next: for (const v of scope.variables) {
         if (!v.defs.length) continue;
         const decls = [];

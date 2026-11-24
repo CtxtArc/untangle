@@ -79,10 +79,21 @@ function hasLexical(block) {
 /**
  * Statement that only writes to the binding `id` refers to (or to a property of it):
  *   x = <pure>;   x += <pure>;   x[k] = <pure>;   x.k = <pure>;   x++;   x.k++;   x[k]--;
+ *   x.push(<pure>);   x.reverse();   ...   (only when x always holds a fresh literal)
  */
+// in-place array methods whose only effect is on the array itself (given plain-data arguments)
+const DEAD_MUTATORS = new Set(['push', 'unshift', 'pop', 'shift', 'reverse', 'sort', 'splice', 'fill', 'copyWithin']);
+const isFn = (n) => /^(FunctionExpression|ArrowFunctionExpression)$/.test(n.type);
+
 function deadWrite(id, pure, fresh = false) {
   let target = id;
   const p = id.parent;
+  // arr.push(x); arr.reverse(); ... on an array nothing else reads (no comparators / callbacks)
+  if (fresh && p.type === 'MemberExpression' && p.object === id && p.parent.type === 'CallExpression' && p.parent.callee === p &&
+      DEAD_MUTATORS.has(propName(p)) && p.parent.arguments.every((a) => a.type !== 'SpreadElement' && !isFn(a) && pure(a))) {
+    const stmt = p.parent.parent;
+    return stmt.type === 'ExpressionStatement' && stmt.expression === p.parent && inStatementList(stmt) ? stmt : null;
+  }
   // x.k = ... only mutates x's own object if x always holds a fresh literal (no aliasing)
   if (p.type === 'MemberExpression' && p.object === id) {
     if (!fresh || (p.computed && !pure(p.property))) return null;
@@ -97,6 +108,16 @@ function deadWrite(id, pure, fresh = false) {
   }
   const stmt = w.parent;
   return stmt.type === 'ExpressionStatement' && stmt.expression === w && inStatementList(stmt) ? stmt : null;
+}
+
+/**
+ * Function-level bindings a direct `eval(...)` in that function (or a nested one) could read by
+ * name. eslint-scope marks every scope enclosing a direct eval as dynamic. The global scope is
+ * always dynamic and is handled by the usual deobfuscator assumption instead: evaluated code is
+ * resolved and shown inline before its references matter.
+ */
+export function evalCanSee(scope) {
+  return scope.type !== 'global' && scope.dynamic;
 }
 
 /** Can a script reach global-object properties by computed name or through an alias of the global? */
@@ -304,6 +325,7 @@ export const removeDeadCode = {
 
     for (const scope of tree.scopeManager.scopes) {
       if (scope.type === 'global' && ctx.options.keepGlobals) continue;
+      if (evalCanSee(scope)) continue; // a direct eval in or below this function can read any local by name
       next: for (const v of scope.variables) {
         if (!v.defs.length) continue;
         // not plainly dead: maybe every read of v only feeds further writes to v

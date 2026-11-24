@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0
+
+Decoders padded with junk array writes, behind a wrapper that stores into a temp before `eval`,
+now resolve with `--dyn`.
+
+- `removeDeadCode`: `arr.push(...)`, `unshift`, `pop`, `shift`, `reverse`, `sort`, `splice`,
+  `fill`, `copyWithin` statements are dead writes when the array is always a fresh literal and
+  nothing else reads it (no callbacks such as sort comparators). This also makes such decoders
+  side-effect free, so the sandbox accepts them.
+- New `inlineSingleUseTemps`: `t = expr; use(t);` becomes `use(expr);` when `t` (declared or an
+  implicit global) has exactly these two references in adjacent statements and only literals or
+  constant bindings are evaluated before the read. Never into branches, loops or functions.
+- Proxy functions with a single expression statement (`function f(p) { g(p); }`) are inlined at
+  call sites used as statements. A body with a direct `eval` only when the function declares
+  nothing besides its parameters.
+- Fix: bindings in a function containing a direct `eval` are no longer removed, renamed, merged or
+  inlined away (the eval'd code can reference them by name).
+
 ## 0.5.2
 
 Fixes a dropper with a 10,596-statement `s += '...'` payload making untangle run out of memory

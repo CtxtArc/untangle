@@ -86,7 +86,12 @@ export function enclosingStatement(node) {
 
 /**
  * Try to inline `call` (a CallExpression) given a function node whose body is a single
- * `return <expr>` (or an arrow with expression body). Returns a fresh expression or null.
+ * `return <expr>` (or an arrow with expression body), or a single expression statement when the
+ * call itself is a statement. Returns a fresh expression or null.
+ *
+ * A direct `eval(...)` in the body runs in the function's scope; it is only moved to the call site
+ * when the function declares nothing but its parameters (the usual assumption that the evaluated
+ * code doesn't depend on the wrapper's internals, which is what lets unwrapEval show it inline).
  */
 export function inlineCall(fn, call, tree, cache) {
   if (fn.async || fn.generator) return null;
@@ -94,6 +99,9 @@ export function inlineCall(fn, call, tree, cache) {
   let expr;
   if (fn.type === 'ArrowFunctionExpression' && fn.expression) expr = fn.body;
   else if (fn.body.type === 'BlockStatement' && fn.body.body.length === 1 && fn.body.body[0].type === 'ReturnStatement') expr = fn.body.body[0].argument;
+  // function f(p) { g(p); }  called as a statement `f(x);`, so its (undefined) result is unused
+  else if (fn.body.type === 'BlockStatement' && fn.body.body.length === 1 && fn.body.body[0].type === 'ExpressionStatement' &&
+    call.parent && call.parent.type === 'ExpressionStatement' && call.parent.expression === call) expr = fn.body.body[0].expression;
   else return null;
   if (!expr) return null;
   if (containsType(expr, ['FunctionExpression', 'ArrowFunctionExpression', 'ClassExpression', 'ThisExpression', 'Super',
@@ -101,6 +109,8 @@ export function inlineCall(fn, call, tree, cache) {
 
   const fnScope = tree.scopeManager.acquire(fn);
   if (!fnScope) return null;
+  const directEval = identifiersIn(expr).some((id) => id.name === 'eval' && !id.variable && id.parent.type === 'CallExpression' && id.parent.callee === id);
+  if (directEval && fnScope.variables.some((v) => v.name !== 'arguments' && !fn.params.some((p) => p.name === v.name))) return null;
   const paramVars = new Map();
   fn.params.forEach((p, i) => { const v = fnScope.set.get(p.name); if (v) paramVars.set(v, i); });
 

@@ -8,6 +8,7 @@
 // declaration or a `s = <lit>` / `s += <lit>` statement directly in one statement list, and no
 // read of s sits between the statements merged together, nor in a nested function.
 import { staticValue, valueToNode } from '../../values.js';
+import { evalCanSee } from './cleanup.js';
 
 const MAX_LEN = 64 * 1024 * 1024;
 
@@ -23,6 +24,7 @@ export default {
   run(ctx) {
     const { tree } = ctx;
     for (const scope of tree.scopeManager.scopes) {
+      if (evalCanSee(scope)) continue; // an eval between appends could read the partial value
       next: for (const v of scope.variables) {
         if (v.defs.length !== 1) continue;
         const d = v.defs[0];
