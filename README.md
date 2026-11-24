@@ -1,4 +1,11 @@
-# untangle
+<p align="center">
+  <img src="assets/banner.png" alt="untangle" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/CtxtArc/untangle/actions"><img src="https://github.com/CtxtArc/untangle/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/license-MIT-5EE6A0" alt="MIT">
+</p>
 
 [![CI](https://github.com/CtxtArc/untangle/actions/workflows/ci.yml/badge.svg)](https://github.com/CtxtArc/untangle/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
