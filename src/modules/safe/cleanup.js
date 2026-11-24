@@ -8,7 +8,7 @@
 import { inStatementList } from '../../ast.js';
 import { isPureNode, propName, NOT } from '../../values.js';
 import { isInside } from '../../utils.js';
-import { isBuiltinValue } from '../../builtins.js';
+import { isBuiltinValueSafe } from '../../builtins.js';
 
 const PURE_METHODS = new Set(['getTime', 'valueOf', 'toString', 'charAt', 'charCodeAt', 'codePointAt', 'indexOf',
   'lastIndexOf', 'slice', 'substr', 'substring', 'toLowerCase', 'toUpperCase', 'trim', 'concat', 'includes',
@@ -265,7 +265,7 @@ export const removeDeadCode = {
   run(ctx) {
     const { tree } = ctx;
     const memo = new Map();
-    const pure = (n) => !n || isPureNode(n) || isBuiltinValue(n, ctx.cache, memo) || sideEffectFree(n);
+    const pure = (n) => !n || isPureNode(n) || isBuiltinValueSafe(n, ctx.cache, memo) || sideEffectFree(n);
 
     // script globals created as `this.NAME = ...` (and read as plain `NAME`)
     if (!ctx.options.keepGlobals && !globalsEscape(tree)) {

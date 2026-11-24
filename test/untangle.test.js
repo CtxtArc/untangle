@@ -318,3 +318,21 @@ test('static: += accumulators, join loops over constant string arrays, plain-lit
   assert.match(st("x = 'a.b'.split(/./);"), /split\(\/\.\//);
   assert.equal(st("var s = 'a'; s += s; use(s);"), norm("use('aa');"));
 });
+
+test('literal append runs merge before SSA; huge and deep chains stay fast and never crash', () => {
+  const st = (c) => deobfuscate(c);
+  assert.equal(st("var s = ''; s += 'ab'; var k = 1; s += 'cd'; use(s, k);").code, norm("use('abcd', 1);"));
+  // a read between appends splits the run
+  assert.equal(st("var s = 'a'; s += 'b'; log(s); s += 'c'; use(s);").code, norm("log('ab'); use('abc');"));
+  // a call in between that could read s through a nested function: left as the SSA pass decides
+  assert.match(st("var s = 'a'; function g() { return s; } s += 'b'; use(g(), s);").code, /s \+= 'b'|s = 'ab'|'ab'/);
+  let lit = "var s = '';\n"; for (let i = 0; i < 20000; i++) lit += `s += 'x${i % 10}';\n`;
+  const r1 = st(lit + 'use(s);');
+  assert.deepEqual(r1.problems, []);
+  assert.match(r1.code, /^use\('x0x1x2/);
+  let dyn = "var s = '';\n"; for (let i = 0; i < 5000; i++) dyn += `s += f(${i % 7});\n`;
+  const t0 = Date.now();
+  const r2 = st(dyn + 'use(s);');
+  assert.deepEqual(r2.problems, []);
+  assert.ok(Date.now() - t0 < 20000);
+});

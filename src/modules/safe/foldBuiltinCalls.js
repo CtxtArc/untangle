@@ -11,7 +11,7 @@
 // expression arguments (a hostile pattern can hang the process), and anything not in the
 // whitelist. Sizes are capped so `'x'.repeat(1e9)` cannot exhaust memory.
 import { staticValue, NOT, valueToNode, isPrimitive, isCanonical, propName } from '../../values.js';
-import { isBuiltinValue, MUTATING_METHODS } from '../../builtins.js';
+import { isBuiltinValue, isBuiltinValueSafe, MUTATING_METHODS } from '../../builtins.js';
 import { isWriteTarget, declarator } from '../../utils.js';
 
 const MAX_LEN = 64 * 1024 * 1024;
@@ -125,7 +125,7 @@ export default {
   run(ctx) {
     const { tree } = ctx;
     const memo = new Map();
-    const cands = tree.ofType('CallExpression').filter((c) => !isWriteTarget(c) && isBuiltinValue(c, ctx.cache, memo));
+    const cands = tree.ofType('CallExpression').filter((c) => !isWriteTarget(c) && isBuiltinValueSafe(c, ctx.cache, memo));
     const set = new Set(cands);
     for (const c of cands) {
       let outer = true;

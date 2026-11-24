@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.2
+
+Fixes a dropper with a 10,596-statement `s += '...'` payload making untangle run out of memory
+("Invalid string length") and stack (`RangeError` in `foldBuiltinCalls` / `resolveBuiltinCalls`).
+
+- New `mergeAccumulators`: runs of literal appends with no read in between are merged into one
+  literal before `splitRedeclarations` sees them (linear instead of materialising every prefix).
+- `splitRedeclarations` leaves bindings with more than 1,000 definitions alone.
+- Builtin-value checks answer "no" instead of crashing on expressions too deep to walk.
+
 ## 0.5.1
 
 - A module that crashes (or produces unparsable code) is still disabled for the rest of the run,

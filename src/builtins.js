@@ -91,6 +91,16 @@ export function isBuiltinValue(node, cache, memo = new Map()) {
   return ok;
 }
 
+/** isBuiltinValue, but "no" instead of a crash on expressions too deep to walk recursively. */
+export function isBuiltinValueSafe(node, cache, memo) {
+  try {
+    return isBuiltinValue(node, cache, memo);
+  } catch (err) {
+    if (err instanceof RangeError) return false;
+    throw err;
+  }
+}
+
 /** Copy of a builtin value expression with every constant binding replaced by its initializer. */
 export function materialize(node, cache, memo = new Map()) {
   return clone(node, (n) => {

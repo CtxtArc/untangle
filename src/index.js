@@ -23,6 +23,7 @@ import unwrapEval from './modules/safe/unwrapEval.js';
 import splitSequences from './modules/safe/splitSequences.js';
 import splitJoinConcat from './modules/safe/splitJoinConcat.js';
 import foldBuiltinCalls from './modules/safe/foldBuiltinCalls.js';
+import mergeAccumulators from './modules/safe/mergeAccumulators.js';
 import splitRedeclarations from './modules/safe/splitRedeclarations.js';
 import foldJoinLoops from './modules/safe/foldJoinLoops.js';
 import removeUnreachable from './modules/safe/removeUnreachable.js';
@@ -37,6 +38,7 @@ export const SAFE_MODULES = [
   normalizeComputed,
   simplifyBranches,
   splitSequences,
+  mergeAccumulators,
   splitRedeclarations,
   foldJoinLoops,
   inlineConstants,

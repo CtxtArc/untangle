@@ -1,6 +1,6 @@
 {
   "name": "untangle",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "JavaScript deobfuscator for malware reversing: restringer-style AST transforms plus sandboxed evaluation",
   "keywords": [
     "deobfuscator",

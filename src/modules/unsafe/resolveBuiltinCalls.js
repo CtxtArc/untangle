@@ -9,7 +9,7 @@ import { valueToNode } from '../../values.js';
 import { runJobs, fromSandbox } from '../../sandbox/runner.js';
 import { isWriteTarget, declarator, readRefs } from '../../utils.js';
 import { generate } from '../../codegen.js';
-import { isBuiltinValue, materialize } from '../../builtins.js';
+import { isBuiltinValueSafe, materialize } from '../../builtins.js';
 
 export default {
   name: 'resolveBuiltinCalls',
@@ -17,7 +17,7 @@ export default {
   run(ctx) {
     const { tree } = ctx;
     const memo = new Map();
-    const cands = tree.ofType('CallExpression').filter((c) => isBuiltinValue(c, ctx.cache, memo) && !isWriteTarget(c));
+    const cands = tree.ofType('CallExpression').filter((c) => isBuiltinValueSafe(c, ctx.cache, memo) && !isWriteTarget(c));
     const set = new Set(cands);
     const covered = (node) => { for (let p = node; p; p = p.parent) if (set.has(p)) return true; return false; };
     const outer = cands.filter((c) => {

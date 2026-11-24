@@ -25,6 +25,7 @@ function usedNames(tree) {
   return names;
 }
 
+const MAX_DEFS = 1000;
 const COMPOUND = new Set(['=', '+=', '-=', '*=', '/=', '%=', '<<=', '>>=', '>>>=', '&=', '|=', '^=']);
 
 export default {
@@ -56,7 +57,8 @@ export default {
               !st || st.type !== 'ExpressionStatement' || st.expression !== a || st.parent[st.parentKey] !== list || st.parentIndex == null) continue next;
           decls.push({ assign: st, name: id, index: st.parentIndex, reads: [], compound: a.operator !== '=' ? a : null });
         }
-        if (decls.length < 2) continue;
+        // past this, renaming only builds chains too long to fold or read (literal runs are merged first)
+        if (decls.length < 2 || decls.length > MAX_DEFS) continue;
         decls.sort((a, b) => a.index - b.index);
         if (!decls[0].def) continue; // first definition must be the declaration
         if (new Set(decls.map((x) => x.index)).size !== decls.length) continue; // two in one statement
