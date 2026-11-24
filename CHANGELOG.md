@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.0
+
+- New `--rename` (library: `rename: 'auto'`): after deobfuscation, machine-generated binding
+  names (`_0x4f1e`, `PREFIX38299`, long all-caps runs) get names from their use: `shell`, `fso`,
+  `stream`, `http`, `exePath`, `url`, `xml`, `cmdLine`, `payload`, `pos`, `i`, `err`, `fn1`,
+  `arg1`, `v1`, ... `--rename-all` (`rename: 'all'`) renames every eligible binding. Only declared
+  bindings, program-wide unique names, and never where `eval` / `with` / `this[expr]` could reach
+  a name at runtime. Result field `renamed`; `--stats` prints it.
+- README: CLI options table, the modules added since 0.5 (`mergeAccumulators`, `foldJoinLoops`,
+  `inlineSingleUseTemps`, the new `removeDeadCode` / `simplifyBranches` / `foldBuiltinCalls`
+  rules), disabled-module warnings, blob language labels, a renaming section.
+- `samples/fib.js`: a small obfuscator.io sample used in the README.
+
 ## 0.7.0
 
 - `removeDeadCode`: removes IIFEs whose only effect is writing properties onto their own fresh

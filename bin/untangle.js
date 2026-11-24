@@ -16,7 +16,10 @@ Options:
                             (decoders, builtin calls, decode loops, packer bodies). Off by default.
   -s, --safe                static transforms only (the default; kept for compatibility)
       --max-iterations <n>  iteration cap (default 100)
-      --keep-globals        do not remove unused top-level declarations
+      --rename              give machine-generated names (_0x4f1e, PREFIX38299) readable names from
+                            their use: shell, fso, stream, url, exePath, i, err, fn1, arg1, v1, ...
+      --rename-all          like --rename, but rename every eligible binding, not only generated ones
+      --keep-globals        do not remove unused top-level declarations (and never rename them)
       --no-dead-code        do not remove unused declarations at all
       --disable <a,b,...>   disable modules by name (see --list-modules)
       --timeout <ms>        per-call sandbox timeout (default 1000)
@@ -45,6 +48,8 @@ try {
       dyn: { type: 'boolean' },
       'max-iterations': { type: 'string' },
       'keep-globals': { type: 'boolean' },
+      rename: { type: 'boolean' },
+      'rename-all': { type: 'boolean' },
       'no-dead-code': { type: 'boolean' },
       disable: { type: 'string' },
       timeout: { type: 'string' },
@@ -96,6 +101,7 @@ try {
     dynamic: !!o.dyn,
     maxIterations: o['max-iterations'] ? Number(o['max-iterations']) : undefined,
     keepGlobals: !!o['keep-globals'],
+    rename: o['rename-all'] ? 'all' : o.rename ? 'auto' : false,
     removeDeadCode: !o['no-dead-code'],
     disable,
     verbose: !!o.verbose,
@@ -138,5 +144,6 @@ for (const p of result.problems || []) {
 
 if (o.stats || o.verbose) {
   console.error(`iterations: ${result.iterations}`);
+  if (result.renamed) console.error(`  renamed bindings       ${result.renamed}`);
   for (const [k, v] of Object.entries(result.stats)) console.error(`  ${k.padEnd(22)} ${v}`);
 }

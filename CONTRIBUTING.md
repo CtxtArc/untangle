@@ -24,7 +24,8 @@ src/utils.js          scope helpers, proxy-call inliner
 src/modules/safe/     static transforms
 src/modules/unsafe/   sandboxed transforms
 src/sandbox/          child-process runner + vm worker
-src/blobs.js          --extract-blobs
+src/blobs.js          --extract-blobs (payload files, type and language labels)
+src/rename.js         --rename (usage-based names; runs once after the fixpoint)
 ```
 
 ## Writing a module
@@ -52,7 +53,11 @@ export default {
 - Scope facts come from eslint-scope: `Identifier.variable` is the binding (or `null` for
   globals). Check `isConstVariable`, `readBeforeDeclaration` and shadowing (`tree.lookup`) before
   moving code to a new place.
+- A transform that removes, renames, merges or moves a binding must skip scopes where a direct
+  `eval` could read it by name: use `evalCanSee(scope)` from `src/modules/safe/cleanup.js`.
 - Register the module in `src/index.js`. Order matters: cheap, enabling transforms first.
+- Document it: a row in the README module table (and the CLI options table / a section for any
+  new flag), plus a CHANGELOG entry.
 
 ## Tests
 

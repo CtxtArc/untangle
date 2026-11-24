@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { createRequire } from 'node:module';
 import { deobfuscate } from '../src/index.js';
 import { generate } from '../src/codegen.js';
 import { parse } from '../src/ast.js';
@@ -405,4 +406,55 @@ test('blob language labels', async () => {
   assert.equal(textLanguage('QUJD'.repeat(500)), null);
   // a packed script that opens with one long data literal is still recognised
   assert.equal(textLanguage('local T = "' + 'x'.repeat(200000) + '"\nlocal a = 1\nlocal b = 2\nif a then b = 3 elseif b ~= 1 then a = 2 end\nlocal function g() end\n'), 'Lua source');
+});
+
+test('--rename: readable names from use, never changing behaviour', () => {
+  const rn = (c, mode = 'auto', extra = {}) => deobfuscate(c, { rename: mode, ...extra }).code;
+  assert.equal(rn('(function () { function _0x1a2b(_0x3c4d) { if (_0x3c4d <= 1) return _0x3c4d; return _0x1a2b(_0x3c4d - 1) + _0x1a2b(_0x3c4d - 2); }' +
+    " for (var _0x5e6f = 0; _0x5e6f < 10; _0x5e6f++) { console.log('F(' + _0x5e6f + ') = ' + _0x1a2b(_0x5e6f)); } }());"),
+  norm("(function () { function fn1(arg1) { if (arg1 <= 1) return arg1; return fn1(arg1 - 1) + fn1(arg1 - 2); }" +
+    " for (var i = 0; i < 10; i++) { console.log('F(' + i + ') = ' + fn1(i)); } }());"));
+  // usage-based names for COM objects, paths, urls, catch params
+  const out = rn("var ABCDEFGH1234 = new ActiveXObject('WScript.Shell'); var ABCDEFGH5678 = new ActiveXObject('Scripting.FileSystemObject');" +
+    " var ABCDEFGH9012 = ABCDEFGH1234.ExpandEnvironmentStrings('%TEMP%') + '\\\\x.exe'; var ABCDEFGH3456 = 'https://e.x/' + ABCDEFGH1234.k;" +
+    ' try { ABCDEFGH5678.f(ABCDEFGH9012, ABCDEFGH3456); } catch (ABCDEFGH7890) { log(ABCDEFGH7890); }');
+  assert.match(out, /var shell = new ActiveXObject/);
+  assert.match(out, /var fso = new ActiveXObject/);
+  assert.match(out, /var exePath = shell\.ExpandEnvironmentStrings/);
+  assert.match(out, /var url = 'https:\/\/e\.x\/' \+ shell\.k/);
+  assert.match(out, /catch \(err\)/);
+  // human-looking names stay unless --rename-all
+  assert.match(rn('function f(count) { var total = count + 1; return total; } use(f);'), /count/);
+  assert.doesNotMatch(rn('function f(count) { var total = count + 1; return total; } use(f);', 'all'), /count|total/);
+  // never: implicit globals, properties, eval-visible locals, globals reachable by name
+  assert.match(rn('_0xabc = f(); use(g(), _0xabc);'), /_0xabc/);
+  assert.match(rn('var o = { _0xabc: 1 }; use(o._0xabc);', 'all'), /_0xabc: 1/);
+  assert.match(rn('function f(_0xabc) { eval(s); return _0xabc; } use(f);'), /_0xabc/);
+  assert.match(rn('var _0xabc = f(); eval(s); use(_0xabc);'), /_0xabc/);
+  assert.match(rn('var _0xabc = f(); use(this[k], _0xabc);'), /_0xabc/);
+  assert.match(rn('var _0xabc = f(); use(g(), _0xabc);', 'auto', { keepGlobals: true }), /_0xabc/);
+  assert.match(rn('var _0xabc = f(); use(g(), _0xabc);'), /var v1 = f\(\)/);  // same code, renamed without keepGlobals
+  // shorthand properties keep their key
+  assert.match(rn('function f(_0xabc) { return { _0xabc }; } use(f);'), /_0xabc: arg1/);
+  // new names never collide with existing ones (fn1 taken -> fn2)
+  assert.match(rn('var fn1 = g(); function _0xabc() { return fn1; } use(_0xabc);'), /function fn2\(\) \{\s*return fn1;/);
+  // off by default
+  assert.match(deobfuscate('function f(_0xabc) { return _0xabc * 2; } use(f);').code, /_0xabc/);
+});
+
+test('--rename-all keeps real libraries working', () => {
+  const require = createRequire(import.meta.url);
+  const M = '/opt/node-tools/node_modules/';
+  if (!fs.existsSync(M + 'acorn/dist/acorn.js')) return;
+  const src = fs.readFileSync(M + 'acorn/dist/acorn.js', 'utf8');
+  const r = deobfuscate(src, { rename: 'all' });
+  assert.ok(r.renamed > 500, `renamed ${r.renamed}`);
+  const file = `${process.env.TMPDIR || '/tmp'}/untangle-renamed-acorn-${process.pid}.cjs`;
+  fs.writeFileSync(file, r.code);
+  try {
+    const probe = fs.readFileSync(M + 'escodegen/escodegen.js', 'utf8');
+    const a = JSON.stringify(require(M + 'acorn/dist/acorn.js').parse(probe, { ecmaVersion: 'latest' }));
+    const b = JSON.stringify(require(file).parse(probe, { ecmaVersion: 'latest' }));
+    assert.equal(a, b);
+  } finally { fs.unlinkSync(file); }
 });

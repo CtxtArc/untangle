@@ -9,6 +9,7 @@
 import { createHash } from 'node:crypto';
 import { Tree } from './ast.js';
 import { Context } from './context.js';
+import { renameBindings } from './rename.js';
 
 import normalizeComputed from './modules/safe/normalizeComputed.js';
 import foldConstants from './modules/safe/foldConstants.js';
@@ -66,6 +67,7 @@ const DEFAULTS = {
   maxIterations: 100,
   removeDeadCode: true,
   keepGlobals: false,
+  rename: false, // false | 'auto' (generated-looking names) | 'all'
   disable: [],
   verbose: false,
   log: (msg) => process.stderr.write(msg + '\n'),
@@ -141,6 +143,19 @@ export function deobfuscate(code, userOptions = {}) {
     if (!changed) break;
   }
 
+  // optional readability pass on the final code
+  let renamed = 0;
+  if (options.rename) {
+    try {
+      renamed = renameBindings(tree, { mode: options.rename === 'all' ? 'all' : 'auto', keepGlobals: options.keepGlobals });
+      if (renamed) tree.commit();
+    } catch (err) {
+      problems.push({ module: 'rename', reason: 'crashed', error: String(err && err.stack || err) });
+      tree.load(tree.code);
+      renamed = 0;
+    }
+  }
+
   // static mode: report what the sandboxed modules would have evaluated, without running anything
   const pending = {};
   if (!options.dynamic) {
@@ -156,7 +171,7 @@ export function deobfuscate(code, userOptions = {}) {
     }
   }
 
-  return { code: tree.code, original, changed: hash(tree.code) !== hash(original), iterations, stats, pending, problems, dynamic: options.dynamic };
+  return { code: tree.code, original, changed: hash(tree.code) !== hash(original), iterations, stats, pending, problems, renamed, dynamic: options.dynamic };
 }
 
 export { Tree };

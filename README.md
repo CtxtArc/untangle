@@ -50,6 +50,7 @@ npm test
 ./bin/untangle.js sample.js -o clean.js --stats     # static only: nothing from the sample runs
 ./bin/untangle.js --dyn sample.js -o clean.js       # also evaluate decoders/loops in the sandbox (isolated VM!)
 ./bin/untangle.js dropper.js --extract-blobs blobs  # also pull embedded payloads out to files
+./bin/untangle.js --dyn sample.js --rename          # also give _0x4f1e-style names readable ones
 cat sample.js | ./bin/untangle.js -
 ```
 
@@ -61,14 +62,44 @@ As a library:
 import { deobfuscate } from 'untangle';
 const { code, stats, pending } = deobfuscate(src);                 // static only
 const full = deobfuscate(src, { dynamic: true });                  // + sandboxed evaluation
+const named = deobfuscate(src, { dynamic: true, rename: 'auto' }); // + readable names
 ```
 
 Payload extraction from code: `import { extractBlobs } from 'untangle/blobs'`.
 
-`pending` lists, per sandboxed module, how many evaluations static mode skipped.
+The result also has `pending` (per sandboxed module, how many evaluations static mode skipped),
+`problems` (modules that crashed and were disabled for the run; the CLI always prints these),
+`renamed` (bindings renamed by `rename`), `iterations` and `changed`.
 
-Options: `dynamic` (default `false`), `maxIterations`, `removeDeadCode`, `keepGlobals`,
-`disable: ['moduleName']`, `verbose`, `sandbox: { timeout, preludeTimeout, checkSideEffects }`.
+Options: `dynamic` (default `false`), `rename` (`false`, `'auto'` or `'all'`), `maxIterations`,
+`removeDeadCode`, `keepGlobals`, `disable: ['moduleName']`, `verbose`,
+`sandbox: { timeout, preludeTimeout, checkSideEffects }`.
+
+## CLI options
+
+| option | does |
+|---|---|
+| `-o, --output <file>` | write the result to a file (default: stdout) |
+| `--dyn` | also run the sandboxed modules, which **execute** fragments of the sample (decoders, builtin calls, decode loops, packer bodies). Off by default; isolated VM only |
+| `--rename` | give machine-generated names (`_0x4f1e`, `PREFIX38299`) readable names from their use, see [Readable names](#readable-names---rename) |
+| `--rename-all` | like `--rename`, but every eligible binding, not only generated-looking ones |
+| `--extract-blobs <dir>` | move long string literals into files, decode base64, identify them, write `manifest.json` |
+| `--blob-min <n>` | minimum literal length for `--extract-blobs` (default 2048) |
+| `--keep-globals` | do not remove (or rename) top-level declarations |
+| `--no-dead-code` | do not remove unused declarations at all |
+| `--disable <a,b,...>` | disable modules by name (see `--list-modules`) |
+| `--max-iterations <n>` | iteration cap (default 100) |
+| `--timeout <ms>` | per-call sandbox timeout (default 1000) |
+| `--no-side-effect-check` | accept decoder results even if a call changes global state |
+| `-s, --safe` | static only (the default; kept for compatibility) |
+| `--stats` | per-module change counts (and renamed bindings) on stderr |
+| `-v, --verbose` | log every module run on stderr |
+| `--list-modules`, `--version`, `-h, --help` | |
+
+Input may be UTF-8, UTF-8 with BOM, UTF-16 LE/BE (as WSH scripts often are) or ANSI; the
+detected encoding is printed when it is not plain UTF-8. If a module crashes, it is disabled for
+the rest of the run and untangle prints `warning: <module> crashed and was disabled ...`: the
+output is then valid but may be less complete. Please report those (with a SHA-256, not the sample).
 
 ## Modules
 
@@ -80,20 +111,23 @@ only report what they would have evaluated.
 |---|---|
 | `foldConstants` | `!![]`, `0x1f + 1`, `'a' + 'b'`, `typeof 'x'`, `void 0`, template literals |
 | `normalizeComputed` | `a['b']` → `a.b`, `{'k': 1}` → `{k: 1}` (keeps `__proto__` / `constructor` semantics) |
-| `simplifyBranches` | static `if` / `?:` / `&&` / `\|\|` / `??` / `while(false)`, keeping hoisted `var`s |
+| `simplifyBranches` | static `if` / `?:` / `&&` / `\|\|` / `??` / `while(false)`, keeping hoisted `var`s; empty branches: `if (c) {} else S` → `if (!c) S` |
 | `splitSequences` | `a(), b()` → `a(); b();`, `return a(), b` → `a(); return b`, `var a, b` → two decls |
-| `splitRedeclarations` | `var s = 'a'; use(s); var s = 'b'; use(s)` and `s = s.split('#').join('')` → `s` / `s_1`, when the definitions are straight-line |
+| `mergeAccumulators` | `var s = ''; s += 'ab'; s += 'cd'` → `var s = 'abcd'` for runs of literal appends with no read in between (linear even for 10k+ appends) |
+| `splitRedeclarations` | `var s = 'a'; use(s); var s = 'b'; use(s)`, `s = s.split('#').join('')` and `s += x` → `s` / `s_1` / `s_2`, when the definitions are straight-line (bindings with over 1000 definitions are left alone) |
+| `foldJoinLoops` | `for (var i = 0; i < a.length; i++) { s += a[i]; }` → `s += a.join('')` when `a` is a constant array of strings and `i` is not used after the loop |
 | `inlineConstants` | `var s = 'x'; f(s)` → `f('x')` (single def, never reassigned, not read before its declaration) |
 | `resolveMemberAccess` | `['a','b'][1]`, `'abc'.length`, and constant arrays that never escape or mutate |
 | `inlineProxyVariables` | `var b = a; b()` → `a()` when `a` resolves to the same binding at every use |
+| `inlineSingleUseTemps` | `t = decode(x); eval(t)` → `eval(decode(x))` when `t` is written and read exactly once, in adjacent statements, with only constants evaluated before the read |
 | `resolveProxyObjects` | obfuscator.io proxy objects: `o.aBc(x, y)` → `x + y`, `o.k` → `'log'` |
-| `inlineProxyFunctions` | single-`return` wrappers: `w('k', 0x20)` → `dec(0x20 - 0x1a, 'k')` |
+| `inlineProxyFunctions` | single-`return` wrappers: `w('k', 0x20)` → `dec(0x20 - 0x1a, 'k')`; single-statement wrappers called as statements: `run(x);` → `eval(dec(x));` (with `eval` only if the wrapper has no locals) |
 | `unflattenControlFlow` | `'2\|0\|1'.split('\|')` + `while(true) switch(o[i++])` dispatchers → straight-line code |
 | `unwrapEval` | `eval('code')` → code, `Function('code')()` → IIFE (only when no local would be captured) |
-| `foldBuiltinCalls` | static: `'dlrow'.split('').reverse().join('')`, `blob.split('♉').join('')`, `String.fromCharCode(…)`, `atob`, `parseInt`, … on literal data, via a whitelist interpreter (no regex arguments, no callbacks, size caps) |
+| `foldBuiltinCalls` | static: `'dlrow'.split('').reverse().join('')`, `blob.split('♉').join('')`, `String.fromCharCode(…)`, `atob`, `parseInt`, … on literal data, via a whitelist interpreter (no callbacks, size caps; regexes only when they are a plain literal string, like `/'/g`) |
 | `splitJoinConcat` ⚠ | `(folder + '\\♉♉ev♉♉il.exe').split('♉♉').join('')` → `folder + '\\evil.exe'` |
 | `removeUnreachable` | statements after `return` / `throw` / `break` / `continue` / `WScript.Quit()` |
-| `removeDeadCode` | unused bindings, even when declared many times, plus statements that only write to them (`junk += '…'`, `obj[k] = {…}`, `x.k++`), and never-read `this.NAME = …` globals; all-or-nothing |
+| `removeDeadCode` | unused bindings, even when declared many times, plus statements that only write to them (`junk += '…'`, `obj[k] = {…}`, `x.k++`, `arr.push(…)` / `unshift` / `reverse` on a fresh array), never-read `this.NAME = …` globals, self-feeding junk (`if (/k/.test(v)) v += 'k'; else v = 'k';`, `try { v = v.concat('k') } catch (e) {…}`, …), and padding IIFEs that only write onto their own fresh arguments (`(function (a, b) { a[b] = {…}; }(function () {…}))`); all-or-nothing, and never for locals a direct `eval` could see |
 | `cleanup` | empty statements, no-op expressions, nested blocks |
 | `resolveBuiltinCalls` 🔒 | what `foldBuiltinCalls` refuses (e.g. regex arguments), in the sandbox; follows constant variables, so a 12-step `a.split('?').join('')` chain resolves in one evaluation |
 | `resolveConstantLoops` 🔒 | `var out = ''; for (…) out += String.fromCharCode(parseInt(blob.substr(i, 2), 16) ^ key.charCodeAt(…))` → `var out = '<decoded>'` |
@@ -108,15 +142,17 @@ without letters or digits that actually occur in the literals. `--disable splitJ
 
 Droppers carry their payloads as multi-megabyte string literals. `--extract-blobs <dir>` moves
 every string literal of at least `--blob-min` characters (default 2048) into a file, decodes
-base64, identifies the result (PE with arch / EXE vs DLL / timestamp, ELF, ZIP, gzip, PDF, Lua
-and LuaJIT bytecode, text) and replaces the literal in the output with a placeholder carrying its
-SHA-256. `manifest.json` lists everything. Nothing extracted is executed.
+base64, identifies the result (PE with arch / EXE vs DLL / timestamp, ELF, ZIP, gzip, PDF, RAR,
+7z, Lua and LuaJIT bytecode) and replaces the literal in the output with a placeholder carrying
+its SHA-256. Text payloads are labelled with their language when it is clear (Lua source,
+PowerShell, VBScript, JavaScript, XML, HTML). `manifest.json` lists everything. Nothing
+extracted is executed.
 
 ```
 $ untangle --dyn dropper.js --extract-blobs blobs -o clean.js
-blob 1: PE x64 EXE, timestamp 2025-01-01, 31800 bytes, sha256 <64 hex> -> blob1_<sha12>.bin
-blob 2: text, 1173848 bytes, sha256 <64 hex> -> blob2_<sha12>.txt
-...
+blob 1: text (Lua source), 731701 bytes, sha256 <64 hex> -> blob1_<sha12>.bin
+blob 2: PE x64 EXE, timestamp 1970-01-01, 27916 bytes, sha256 <64 hex> -> blob2_<sha12>.bin
+blob 3: PE x64 DLL, timestamp 1970-01-01, 449691 bytes, sha256 <64 hex> -> blob3_<sha12>.bin
 ```
 
 ### How decoder resolution works
@@ -134,6 +170,65 @@ sandbox, then every call is evaluated **twice**. A result is accepted only if:
 
 When every call to a decoder is resolved and nothing else uses its context, the decoder,
 its string array and its rotator are removed.
+
+## Readable names (`--rename`)
+
+Obfuscators replace every name with noise. After deobfuscation, `--rename` gives those bindings
+names derived from how they are used. It runs once on the final code and needs no evaluation, so
+it works the same with or without `--dyn`.
+
+```
+$ untangle --dyn --rename samples/fib.js          $ untangle --dyn samples/fib.js
+(function () {                                    (function () {
+  function fn1(arg1) {                              function _0x199140(_0x4676b2) {
+    if (arg1 <= 1)                                    if (_0x4676b2 <= 1)
+      return arg1;                                      return _0x4676b2;
+    return fn1(arg1 - 1) + fn1(arg1 - 2);             return _0x199140(_0x4676b2 - 1) + ...
+  }                                                 }
+  for (var i = 0; i < 10; i++) {                    for (var _0x2444ab = 0; _0x2444ab < 10; ...
+```
+
+and on a WSH dropper:
+
+```js
+var shell = new ActiveXObject('WScript.Shell');
+var myDocuments = shell.SpecialFolders('MyDocuments');
+var fso = new ActiveXObject('Scripting.FileSystemObject');
+var exePath = myDocuments + '\\AYTRJHTPTRRUBMPC.exe';
+var dllPath = myDocuments + '\\lua51.dll';
+...
+var stream = new ActiveXObject('ADODB.Stream');
+```
+
+| the binding holds / is | name |
+|---|---|
+| `new ActiveXObject(…)`, `CreateObject(…)`, `GetObject('new:…')` | `shell`, `fso`, `stream`, `http`, `xmlDoc`, `network`, `scheduler`, `shellApp`, `dict`, `wmi`, … |
+| `ExpandEnvironmentStrings('%TEMP%')`, `SpecialFolders('MyDocuments')` | `temp`, `myDocuments` |
+| a string or concatenation ending in `.exe` / `.dll` / `.ps1` / … | `exePath`, `dllPath`, `ps1Path`, … |
+| other paths (`C:\…`, `…\`, `%ENV%`) / `http(s)://…` / `<?xml …` / a command line | `path`, `url`, `xml`, `cmdLine` |
+| a string of 1 KB or more / other strings | `payload` / `str` |
+| `x.indexOf(…)`, `x.substring(…)`, `x.split(…)`, `x.length`, `Math.*` | `pos`, `part`, `parts`, `len`, `num` |
+| `x.CreateTextFile(…)`, `x.createElement(…)`, `new Date()`, `x.getFoo()`, `x.Foo` | `file`, `element`, `date`, `foo`, `foo` |
+| a `for` loop counter / `for…in` key / `catch` parameter | `i`, `j`, `k`, … / `key` / `err` |
+| a function / parameter / array / object / anything else | `fn1`, `arg1`, `arr`, `obj`, `v1`, … |
+
+`--rename` only touches names that look machine-generated (`_0x…` hex, a prefix followed by 3+
+digits like `AYTRJHTPTRRUBMPC38299`, long all-caps runs, `IlI1lI`-style). Random short names such
+as `LkFWdl` cannot be told apart from human ones reliably: use `--rename-all` to rename every
+eligible binding.
+
+It never changes behaviour:
+
+- only declared bindings are renamed: never implicit globals, properties or object keys
+  (shorthand `{ a }` becomes `{ a: renamed }`);
+- every new name is unique in the whole program (`shell`, `shell1`, …), so nothing is shadowed
+  or captured, and reserved words and well-known globals (`WScript`, `console`, …) are never used;
+- nothing is renamed where code could reach it by name at runtime: locals of a function that
+  contains a direct `eval`, and all top-level bindings when the script uses `eval`, `with` or
+  `this[expr]` (or `--keep-globals` is given).
+
+The test suite renames acorn, esprima and estraverse with `--rename-all` and checks they still
+behave identically.
 
 ## Safety model
 
@@ -163,7 +258,11 @@ with `--dyn` on live samples only inside a disposable analysis VM.
   that decoder is skipped. Use `--disable` or strip the guard first.
 - Decoders that keep a cache in a global plain object are rejected by the side-effect check:
   use `--no-side-effect-check` when you have checked the decoder by hand.
-- No identifier renaming yet (`_0x9f8e` → `id`), and no JSFuck / AAEncode-specific modules.
+- No JSFuck / AAEncode-specific modules, and JScript.Encode (`#@~^…^#~@`) is detected but not
+  decoded yet.
+- After every module that changes something the whole program is regenerated and re-parsed (that
+  keeps scope information exact). On multi-megabyte samples this dominates the run time (about
+  40 s for a 5 MB dropper); re-parsing only the changed regions is on the list.
 
 ## Contributing
 
