@@ -1,0 +1,10 @@
+node_modules
+*.log
+.DS_Store
+/blobs/
+/out/
+# never commit live samples or extracted payloads
+*.bin
+*.exe
+*.dll
+/malware/

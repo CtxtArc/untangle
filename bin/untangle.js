@@ -1,0 +1,110 @@
+#!/usr/bin/env node
+import fs from 'node:fs';
+import { parseArgs } from 'node:util';
+import { deobfuscate, ALL_MODULES } from '../src/index.js';
+import { SANDBOX_FLAGS } from '../src/sandbox/runner.js';
+import { extractBlobs } from '../src/blobs.js';
+
+const HELP = `untangle - JavaScript deobfuscator for malware reversing
+
+Usage: untangle [options] <input.js | ->
+
+Options:
+  -o, --output <file>       write result to file (default: stdout)
+  -s, --safe                only static transforms, never evaluate sample code
+      --max-iterations <n>  iteration cap (default 100)
+      --keep-globals        do not remove unused top-level declarations
+      --no-dead-code        do not remove unused declarations at all
+      --disable <a,b,...>   disable modules by name (see --list-modules)
+      --timeout <ms>        per-call sandbox timeout (default 1000)
+      --no-side-effect-check  accept decoder results even if a call changes global state
+      --extract-blobs <dir> move string literals >= --blob-min chars into files (base64 is
+                            decoded and identified: PE/ELF/ZIP/...); writes manifest.json
+      --blob-min <n>        minimum length for --extract-blobs (default 2048)
+      --stats               print per-module change counts to stderr
+  -v, --verbose             log every module run to stderr
+      --list-modules        list transformation modules and exit
+      --version             print the version
+  -h, --help                show this help
+
+WARNING: unless --safe is given, parts of the input are executed inside a sandbox
+(separate Node process, permission model${SANDBOX_FLAGS.length ? '' : ' UNAVAILABLE on this Node'}, vm context with no host objects).
+That is defense in depth, not a security boundary: work on hostile samples in a VM.`;
+
+let args;
+try {
+  args = parseArgs({
+    allowPositionals: true,
+    options: {
+      output: { type: 'string', short: 'o' },
+      safe: { type: 'boolean', short: 's' },
+      'max-iterations': { type: 'string' },
+      'keep-globals': { type: 'boolean' },
+      'no-dead-code': { type: 'boolean' },
+      disable: { type: 'string' },
+      timeout: { type: 'string' },
+      'no-side-effect-check': { type: 'boolean' },
+      stats: { type: 'boolean' },
+      'extract-blobs': { type: 'string' },
+      'blob-min': { type: 'string' },
+      verbose: { type: 'boolean', short: 'v' },
+      'list-modules': { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean' },
+    },
+  });
+} catch (err) {
+  console.error(err.message + '\n\n' + HELP);
+  process.exit(2);
+}
+const o = args.values;
+
+if (o.help) { console.log(HELP); process.exit(0); }
+if (o.version) {
+  console.log(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
+  process.exit(0);
+}
+if (o['list-modules']) {
+  for (const m of ALL_MODULES) console.log(`${m.unsafe ? 'sandbox' : 'static '}  ${m.name}`);
+  process.exit(0);
+}
+if (args.positionals.length !== 1) { console.error(HELP); process.exit(2); }
+
+const input = args.positionals[0] === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(args.positionals[0], 'utf8');
+const known = new Set(ALL_MODULES.map((m) => m.name));
+const disable = (o.disable || '').split(',').map((s) => s.trim()).filter(Boolean);
+for (const d of disable) if (!known.has(d)) { console.error(`unknown module: ${d}`); process.exit(2); }
+
+let result;
+try {
+  result = deobfuscate(input, {
+    unsafe: !o.safe,
+    maxIterations: o['max-iterations'] ? Number(o['max-iterations']) : undefined,
+    keepGlobals: !!o['keep-globals'],
+    removeDeadCode: !o['no-dead-code'],
+    disable,
+    verbose: !!o.verbose,
+    sandbox: {
+      timeout: o.timeout ? Number(o.timeout) : undefined,
+      checkSideEffects: !o['no-side-effect-check'],
+    },
+  });
+} catch (err) {
+  console.error(`untangle: ${err.message}`);
+  process.exit(1);
+}
+
+let out = result.code;
+if (o['extract-blobs']) {
+  const { code, blobs } = extractBlobs(out, o['extract-blobs'], { minLength: o['blob-min'] ? Number(o['blob-min']) : undefined });
+  out = code;
+  for (const b of blobs) console.error(`blob ${b.id}: ${b.type}, ${b.bytes ?? b.chars} ${b.bytes ? 'bytes' : 'chars'}, sha256 ${b.sha256} -> ${b.file}`);
+}
+
+if (o.output) fs.writeFileSync(o.output, out + '\n');
+else process.stdout.write(out + '\n');
+
+if (o.stats || o.verbose) {
+  console.error(`iterations: ${result.iterations}`);
+  for (const [k, v] of Object.entries(result.stats)) console.error(`  ${k.padEnd(22)} ${v}`);
+}
