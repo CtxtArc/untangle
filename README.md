@@ -85,6 +85,7 @@ Options: `dynamic` (default `false`), `rename` (`false`, `'auto'` or `'all'`), `
 | `--rename-all` | like `--rename`, but every eligible binding, not only generated-looking ones |
 | `--extract-blobs <dir>` | move long string literals into files, decode base64, identify them, write `manifest.json` |
 | `--blob-min <n>` | minimum literal length for `--extract-blobs` (default 2048) |
+| `--decode-only` | only decode the input (UTF-16 / ANSI, JScript.Encode / VBScript.Encode) and write it as is, without parsing or deobfuscating: for `.vbe` files, or to look at the decoded text first |
 | `--keep-globals` | do not remove (or rename) top-level declarations |
 | `--no-dead-code` | do not remove unused declarations at all |
 | `--disable <a,b,...>` | disable modules by name (see `--list-modules`) |
@@ -97,7 +98,24 @@ Options: `dynamic` (default `false`), `rename` (`false`, `'auto'` or `'all'`), `
 | `--list-modules`, `--version`, `-h, --help` | |
 
 Input may be UTF-8, UTF-8 with BOM, UTF-16 LE/BE (as WSH scripts often are) or ANSI; the
-detected encoding is printed when it is not plain UTF-8. JScript-only syntax is accepted:
+detected encoding is printed when it is not plain UTF-8.
+
+Script Encoder output (`screnc.exe`: JScript.Encode `.jse`, VBScript.Encode `.vbe`, or
+`<script language="JScript.Encode">` blocks) is decoded on input: every `#@~^…^#~@` block is replaced
+by its plaintext and its length and checksum are verified (a mismatch is reported, the text is still
+decoded). It is a fixed three-alphabet substitution, not encryption, so no key or Windows tool is
+needed. Text around the blocks is kept, and screnc's `//**Start Encode**` marker comment is ended
+before the decoded code. Decoded VBScript is not JavaScript: untangle says so, and `--decode-only`
+prints it.
+
+```
+$ untangle --dyn dropper.jse
+input encoding: windows-1252 (not valid UTF-8), Script Encoder: 1 block decoded
+...
+$ untangle --decode-only payload.vbe -o payload.vbs
+```
+
+JScript-only syntax is accepted:
 assignments to a call (`dict.Item("k") = v`, `sh.Environment("User")("X") = v`), which WSH allows
 for parameterised COM properties, are parsed and written back exactly as they were. If a module crashes, it is disabled for
 the rest of the run and untangle prints `warning: <module> crashed and was disabled ...`: the
@@ -322,8 +340,8 @@ with `--dyn` on live samples only inside a disposable analysis VM.
   that decoder is skipped. Use `--disable` or strip the guard first.
 - Decoders that keep a cache in a global plain object are rejected by the side-effect check:
   use `--no-side-effect-check` when you have checked the decoder by hand.
-- No JSFuck / AAEncode-specific modules, and JScript.Encode (`#@~^…^#~@`) is detected but not
-  decoded yet.
+- No JSFuck / AAEncode-specific modules.
+- VBScript (including decoded `.vbe`) is not deobfuscated, only decoded with `--decode-only`.
 - After every module that changes something the whole program is regenerated and re-parsed (that
   keeps scope information exact). On multi-megabyte samples this dominates the run time (about
   40 s for a 5 MB dropper); re-parsing only the changed regions is on the list.

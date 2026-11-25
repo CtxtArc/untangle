@@ -27,6 +27,8 @@ Options:
       --extract-blobs <dir> move string literals >= --blob-min chars into files (base64 is
                             decoded and identified: PE/ELF/ZIP/...); writes manifest.json
       --blob-min <n>        minimum length for --extract-blobs (default 2048)
+      --decode-only         only decode the input (UTF-16 / ANSI, JScript.Encode / VBScript.Encode)
+                            and write it as is: no parsing, nothing deobfuscated
       --stats               print per-module change counts to stderr
   -v, --verbose             log every module run to stderr
       --list-modules        list transformation modules and exit
@@ -56,6 +58,7 @@ try {
       'no-side-effect-check': { type: 'boolean' },
       stats: { type: 'boolean' },
       'extract-blobs': { type: 'string' },
+      'decode-only': { type: 'boolean' },
       'blob-min': { type: 'string' },
       verbose: { type: 'boolean', short: 'v' },
       'list-modules': { type: 'boolean' },
@@ -83,10 +86,17 @@ if (o.safe && o.dyn) { console.error('untangle: --safe and --dyn are mutually ex
 
 const raw = args.positionals[0] === '-' ? fs.readFileSync(0) : fs.readFileSync(args.positionals[0]);
 let input;
+let scriptEncoded = false;
 try {
   const decoded = decodeSource(raw);
   input = decoded.code;
-  if (o.verbose || !decoded.encoding.startsWith('utf-8')) console.error(`input encoding: ${decoded.encoding}`);
+  if (o.verbose || !decoded.encoding.startsWith('utf-8') || decoded.scriptEncoded) console.error(`input encoding: ${decoded.encoding}`);
+  if (o['decode-only']) {
+    if (o.output) fs.writeFileSync(o.output, input);
+    else process.stdout.write(input);
+    process.exit(0);
+  }
+  scriptEncoded = !!decoded.scriptEncoded;
 } catch (err) {
   if (err instanceof InputError) { console.error(`untangle: ${err.message}`); process.exit(1); }
   throw err;
@@ -112,6 +122,7 @@ try {
   });
 } catch (err) {
   console.error(`untangle: ${describeParseError(err, input)}`);
+  if (scriptEncoded) console.error('untangle: the decoded Script Encoder text is not JavaScript (VBScript.Encode / .vbe?): use --decode-only to get it as is');
   process.exit(1);
 }
 

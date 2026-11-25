@@ -4,6 +4,8 @@
 // codepage, so droppers come in all of these. Reading them as UTF-8 produces U+FFFD garbage
 // that the parser rejects.
 
+import { decodeScriptEncoder } from './scriptEncoder.js';
+
 export class InputError extends Error {}
 
 function looksUtf16(buf) {
@@ -60,9 +62,17 @@ export function decodeSource(buf) {
     }
   }
   if (code.charCodeAt(0) === 0xfeff) code = code.slice(1);
-  if (/^\s*(<[^>]*>\s*)*#@~\^/.test(code.slice(0, 4096)) || code.includes('#@~^')) {
-    throw new InputError('this is a JScript.Encode (screnc / .jse) script ("#@~^...^#~@"): decode it first, ' +
-      'e.g. with a Windows "scrdec" tool, then run untangle on the result');
+  if (code.includes('#@~^')) {
+    // JScript.Encode / VBScript.Encode (screnc, .jse / .vbe): a fixed substitution, decoded here
+    const r = decodeScriptEncoder(code);
+    if (!r.blocks) {
+      throw new InputError('this looks like a Script Encoder (screnc / .jse) script, but no complete ' +
+        '"#@~^...^#~@" block was found: is the file truncated?');
+    }
+    code = r.code;
+    encoding += `, Script Encoder: ${r.blocks} block${r.blocks > 1 ? 's' : ''} decoded` +
+      (r.badChecksums ? ` (${r.badChecksums} with a wrong length or checksum: the file was altered)` : '');
+    return { code, encoding, scriptEncoded: r };
   }
   return { code, encoding };
 }

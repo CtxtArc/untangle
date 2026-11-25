@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.0
+
+- JScript.Encode / VBScript.Encode (screnc, `.jse` / `.vbe`, `#@~^…^#~@` blocks) is decoded on
+  input instead of refused: plaintext replaces each block, length and checksum are verified, text
+  around blocks is kept and screnc's `//**Start Encode**` marker comment is ended before the code.
+  The tables match Wine's and scrdec's decoders and the published encoder table.
+- New `--decode-only`: write the decoded input (UTF-16 / ANSI / Script Encoder) as is, without
+  deobfuscating, e.g. for `.vbe`. When decoded text does not parse as JavaScript, untangle points to it.
+
 ## 0.13.0
 
 - New `localizeTemps`: implicit globals used only as one function's scratch variables

@@ -193,7 +193,7 @@ test('input decoding: UTF-16 (BOM / no BOM), UTF-8 BOM, ANSI, JScript.Encode', a
   assert.equal(decodeSource(le).code, s);
   assert.equal(decodeSource(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(s)])).code, s);
   assert.equal(decodeSource(Buffer.from([0x76, 0x3d, 0x27, 0xe9, 0x80, 0x27])).code, "v='é€'");
-  assert.throws(() => decodeSource(Buffer.from('#@~^MwAAAA==abc^#~@')), /JScript\.Encode/);
+  assert.throws(() => decodeSource(Buffer.from('#@~^MwAAAA==abc^#~@')), /Script Encoder/); // truncated block
 });
 
 function wshTrace(code) {
@@ -634,4 +634,48 @@ test('rename treats underscore runs and long digit runs as generated names', asy
   const { looksGenerated } = await import('../src/rename.js');
   for (const n of ['___', '_______________1', 'q45qsdfus8465dfsfgth', 'fgspg87857878561']) assert.ok(looksGenerated(n), n);
   for (const n of ['_', 'sha256Digest', 'utf8Decode', 'x1', '__proto']) assert.ok(!looksGenerated(n), n);
+});
+
+test('JScript.Encode / VBScript.Encode (screnc, .jse / .vbe) is decoded on input', async () => {
+  const { decodeSource } = await import('../src/input.js');
+  const { decodeScriptEncoder, encodeScriptEncoder, encodeNumber } = await import('../src/scriptEncoder.js');
+  // a vector built from the published encoder table, not from this decoder: positions 0-3 use
+  // alphabets 1, 2, 0, 1, and tab, space, !, " encode there as 0x37 0x2c 0x22 0x45
+  const v = decodeScriptEncoder(`#@~^${encodeNumber(4)}7,"E${encodeNumber(9 + 32 + 33 + 34)}^#~@`);
+  assert.equal(v.code, '\t !"');
+  assert.equal(v.badChecksums, 0);
+  // escapes (\r \n < > @) take a position of the pattern; non-ASCII passes through without one
+  const js = 'var s = new ActiveXObject("WScript.Shell");\r\nif (a < b && c > d) s.Run("x@y é", 0);\r\n';
+  const enc = encodeScriptEncoder(js);
+  assert.match(enc, /^#@~\^.{6}==.*@#@&.*\^#~@$/s);
+  const r = decodeSource(Buffer.from(enc, 'latin1'));
+  assert.equal(r.code, js);
+  assert.match(r.encoding, /Script Encoder: 1 block decoded$/);
+  // screnc's marker comment stays on its own line; text around blocks is kept
+  assert.equal(decodeScriptEncoder('//**Start Encode**' + encodeScriptEncoder('run();')).code, '//**Start Encode**\nrun();');
+  assert.equal(decodeScriptEncoder('a();\n' + encodeScriptEncoder('b();') + '\nc();').code, 'a();\nb();\nc();');
+  // an altered block still decodes, but says so
+  const bad = enc.replace(/(.{6}==\^#~@)$/, 'AAAAAA==^#~@');
+  assert.match(decodeSource(Buffer.from(bad, 'latin1')).encoding, /wrong length or checksum/);
+  // and the whole pipeline runs on the result
+  assert.equal(deobfuscate(decodeScriptEncoder(encodeScriptEncoder('var k = "Run"; WScript.CreateObject("WScript.Shell")[k]("calc");')).code).code,
+    norm("WScript.CreateObject('WScript.Shell').Run('calc');"));
+});
+
+test('CLI: .jse input, --decode-only, and the VBScript hint', async () => {
+  const { execFileSync, spawnSync } = await import('node:child_process');
+  const { encodeScriptEncoder } = await import('../src/scriptEncoder.js');
+  const dir = fs.mkdtempSync(`${process.env.TMPDIR || '/tmp'}/untangle-jse-`);
+  const bin = new URL('../bin/untangle.js', import.meta.url).pathname;
+  try {
+    fs.writeFileSync(`${dir}/a.jse`, encodeScriptEncoder('var k = "Run"; WScript.CreateObject("WScript.Shell")[k]("calc");'));
+    assert.equal(execFileSync('node', [bin, `${dir}/a.jse`], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(),
+      "WScript.CreateObject('WScript.Shell').Run('calc');");
+    fs.writeFileSync(`${dir}/b.vbe`, encodeScriptEncoder('Set s = CreateObject("WScript.Shell")\r\ns.Run "calc"\r\n'));
+    assert.equal(execFileSync('node', [bin, '--decode-only', `${dir}/b.vbe`], { stdio: ['ignore', 'pipe', 'ignore'] }).toString(),
+      'Set s = CreateObject("WScript.Shell")\r\ns.Run "calc"\r\n');
+    const r = spawnSync('node', [bin, `${dir}/b.vbe`]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr.toString(), /--decode-only/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
