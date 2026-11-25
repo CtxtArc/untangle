@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0
+
+- `resolveDecoderCalls` (`--dyn`): arguments no longer have to be literal primitives. Constant
+  arguments now include fresh array / object literals of constants, bindings that hold a
+  primitive (substituted by value), nested calls to other functions with constant arguments
+  (their contexts join the prelude) and a static read of the result (`f(...).length`). Only the
+  outermost call is evaluated. A sample whose payload went through a custom-alphabet base64 + a
+  stream cipher + 43 offset/XOR slices now resolves completely (1193 -> 217 lines).
+- Fix (`inlineSingleUseTemps`): a read inside a `var x = ...` initialiser was never matched.
+  Object / array / function literals are no longer inlined (proxy-object and constant-array
+  passes need them bound).
+- `--extract-blobs` no longer writes an empty `manifest.json` when nothing was extracted.
+
 ## 0.8.0
 
 - New `--rename` (library: `rename: 'auto'`): after deobfuscation, machine-generated binding

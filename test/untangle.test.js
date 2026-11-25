@@ -166,8 +166,7 @@ test('WSH junk-char dropper pattern (synthetic)', () => {
     sh.Run(p.split("♉♉♉").join(""), 0, false);`;
   same(src, `
     var sh = new ActiveXObject('WScript.Shell');
-    var d = sh.SpecialFolders('MyDocuments');
-    var p = d + '\\\\payload.exe';
+    var p = sh.SpecialFolders('MyDocuments') + '\\\\payload.exe';
     el.text = 'aGVsbG8';
     el2.text = 'd29ybGQ=';
     sh.Run(p, 0, false);`);
@@ -359,6 +358,9 @@ test('dead array mutations, single-use temps, statement-body proxies', () => {
   assert.match(st('t = f(); use(t); this[k]();'), /t = f\(\)/);    // globals reachable by name
   assert.match(st('t = f(); use(n, t); n = 1;'), /t = f\(\)/);     // n is written somewhere
   assert.equal(st('t = f(); use(1, t); n = 2;'), norm('use(1, f()); n = 2;'));
+  assert.equal(st('function g() { var q = f(); var r = h(q, 1); return [r, r]; } use(g);'), norm('function g() { var r = h(f(), 1); return [r, r]; } use(g);')); // read in a var initialiser
+  assert.match(st('function g() { var q = f(); var r = h(k(), q); return [r, r]; } use(g);'), /var q = f\(\)/);
+  assert.match(st('function g() { var o = { a: x() }; return h(o); } use(g);'), /var o = \{/); // literals stay bound
   // statement-body proxies
   assert.equal(st('function w(p) { log(p); } w(1); w(2);'), norm('log(1); log(2);'));
   assert.match(st('function w(p) { log(p); } x = w(1);'), /w\(1\)/);        // result used: undefined, keep
@@ -428,7 +430,7 @@ test('--rename: readable names from use, never changing behaviour', () => {
   assert.doesNotMatch(rn('function f(count) { var total = count + 1; return total; } use(f);', 'all'), /count|total/);
   // never: implicit globals, properties, eval-visible locals, globals reachable by name
   assert.match(rn('_0xabc = f(); use(g(), _0xabc);'), /_0xabc/);
-  assert.match(rn('var o = { _0xabc: 1 }; use(o._0xabc);', 'all'), /_0xabc: 1/);
+  assert.match(rn('var o = { _0xabc: f() }; use(o._0xabc, o);', 'all'), /_0xabc: f\(\)[\s\S]*\._0xabc/);
   assert.match(rn('function f(_0xabc) { eval(s); return _0xabc; } use(f);'), /_0xabc/);
   assert.match(rn('var _0xabc = f(); eval(s); use(_0xabc);'), /_0xabc/);
   assert.match(rn('var _0xabc = f(); use(this[k], _0xabc);'), /_0xabc/);
@@ -457,4 +459,28 @@ test('--rename-all keeps real libraries working', () => {
     const b = JSON.stringify(require(file).parse(probe, { ecmaVersion: 'latest' }));
     assert.equal(a, b);
   } finally { fs.unlinkSync(file); }
+});
+
+test('decoder calls with constant arguments: nested calls, literal arrays, constant strings, f(...).length', () => {
+  const prelude = 'function unpack(s) { var o = []; for (var i = 0; i < s.length; i++) o.push(s.charCodeAt(i) - 1); return o; }' +
+    ' function derive(b, k) { var r = ""; for (var i = 0; i < b.length; i++) r += String.fromCharCode(b[i] ^ k[i % k.length]); return r; }' +
+    ' function pick(buf, off, x) { var r = ""; for (var i = 0; i < x.length; i++) r += String.fromCharCode(buf.charCodeAt(off + i) ^ x[i]); return r; }' +
+    ' function keep(a) { var o = []; for (var i = 0; i < a.length; i++) if (a[i]) o.push(a[i]); return o; }';
+  const out = deob(prelude + ' function run() { var buf = derive(unpack("IFMMP!XPSME"), [1, 2]); var a = [pick(buf, 0, [1, 2, 3]), pick(buf, 3, [0, 0])];' +
+    ' if (keep(["x", "y", ""]).length > 1) WScript.Echo(a.join("|")); } run();');
+  assert.equal(out, norm("WScript.Echo('HEN|NN');"));
+  // an array bound to a name may be mutated by the call: not a constant argument
+  assert.match(deob(prelude + ' var arr = ["x", "", "y"]; function run() { use(keep(arr).length, arr); } run();'), /keep\(arr\)/);
+  // static mode never evaluates any of it
+  assert.match(deob(prelude + ' WScript.Echo(derive(unpack("IFMMP"), [1, 2]));', { dynamic: false }), /derive\(unpack/);
+});
+
+test('--extract-blobs leaves no manifest when nothing was extracted', async () => {
+  const { extractBlobs } = await import('../src/blobs.js');
+  const dir = fs.mkdtempSync(`${process.env.TMPDIR || '/tmp'}/untangle-blobs-`);
+  try {
+    const r = extractBlobs('var a = "short";', dir);
+    assert.equal(r.blobs.length, 0);
+    assert.equal(fs.existsSync(`${dir}/manifest.json`), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

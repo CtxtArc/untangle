@@ -6,14 +6,20 @@
 //   (function (arr, target) { ... rotate until checksum matches ... })(_0xarr, 0x5a3c1);
 //   console[_0xdec(0x1a2)](_0xdec(0x1a5))        ->   console['log']('Hello')
 //
-// For every function called with literal-only arguments we collect its "context": its own
+// For every function called with constant arguments we collect its "context": its own
 // declaration, the declarations of everything it references (transitively), direct
 // assignments to those bindings, and IIFEs that receive one of them as an argument (array
 // rotators). The context runs once as a prelude; each call is then evaluated twice and must
 // return the same primitive without touching global state.
+//
+// Constant arguments are primitives, fresh array / object literals of constants (a new copy each
+// evaluation, so nothing the call mutates is visible to the program), constant bindings with a
+// primitive value (substituted), and nested calls to other functions with constant arguments
+// (their contexts join the prelude):
+//   key = derive(unpack('Qm9v'), [3, 1, 4]);   gate(buf, 21081, [63, 56, 4]);   f(g(['a', 'b'])) > 0
 import { inStatementList, clone, walk } from '../../ast.js';
 import { staticValue, NOT, isPrimitive, valueToNode } from '../../values.js';
-import { isInside } from '../../utils.js';
+import { isInside, isConstVariable, readBeforeDeclaration } from '../../utils.js';
 import { runJobs, fromSandbox } from '../../sandbox/runner.js';
 import { generate } from '../../codegen.js';
 
@@ -127,30 +133,115 @@ function functionVariables(tree) {
   return out;
 }
 
+const MAX_ARG_DEPTH = 4;
+
+/** Primitive value of a constant binding (`var buf = '...'`, never reassigned or read early), or NOT. */
+function bindingValue(id, cache) {
+  const v = id.type === 'Identifier' ? id.variable : null;
+  if (!v || !isConstVariable(v) || readBeforeDeclaration(v) || v.defs[0].type !== 'Variable') return NOT;
+  const init = v.defs[0].node.init;
+  if (!init) return NOT;
+  const sv = staticValue(init, cache);
+  return sv !== NOT && isPrimitive(sv) ? sv : NOT;
+}
+
+/** staticValue, or the value of a constant binding. */
+function argValue(a, cache) {
+  const sv = staticValue(a, cache);
+  if (sv !== NOT) return sv;
+  return a.type === 'Identifier' ? bindingValue(a, cache) : NOT;
+}
+
+/**
+ * Is `a` a constant argument? Collects the function bindings of nested calls into `fns`.
+ * Returns false, or true.
+ */
+function constArg(a, cache, fns, fnVars, depth = 0) {
+  if (!a || a.type === 'SpreadElement') return false;
+  const sv = argValue(a, cache);
+  if (sv !== NOT && isPrimitive(sv)) return true;
+  if (depth >= MAX_ARG_DEPTH) return false;
+  if (a.type === 'ArrayExpression') return a.elements.every((e) => e && constArg(e, cache, fns, fnVars, depth + 1));
+  if (a.type === 'ObjectExpression') {
+    return a.properties.every((p) => p.type === 'Property' && p.kind === 'init' && !p.computed && !p.method &&
+      constArg(p.value, cache, fns, fnVars, depth + 1));
+  }
+  if (a.type === 'CallExpression' && !a.optional && a.callee.type === 'Identifier' && a.callee.variable && fnVars.has(a.callee.variable)) {
+    if (!a.arguments.every((x) => constArg(x, cache, fns, fnVars, depth + 1))) return false;
+    fns.add(a.callee.variable);
+    return true;
+  }
+  return false;
+}
+
+/** The call as standalone code: constant identifiers replaced by their values. */
+function standalone(n, cache) {
+  const sv = argValue(n, cache);
+  if (n.type !== 'CallExpression' && n.type !== 'MemberExpression' && sv !== NOT && isPrimitive(sv)) return valueToNode(sv);
+  switch (n.type) {
+    case 'CallExpression': return { type: 'CallExpression', optional: false, callee: clone(n.callee), arguments: n.arguments.map((a) => standalone(a, cache)) };
+    case 'MemberExpression': return { type: 'MemberExpression', optional: false, computed: n.computed, object: standalone(n.object, cache), property: n.computed ? standalone(n.property, cache) : clone(n.property) };
+    case 'ArrayExpression': return { type: 'ArrayExpression', elements: n.elements.map((e) => standalone(e, cache)) };
+    case 'ObjectExpression': return { type: 'ObjectExpression', properties: n.properties.map((p) => ({ ...clone(p), value: standalone(p.value, cache) })) };
+    default: return clone(n);
+  }
+}
+
 export default {
   name: 'resolveDecoderCalls',
   unsafe: true,
   run(ctx) {
     const { tree } = ctx;
+    const fnList = functionVariables(tree);
+    const fnVars = new Set(fnList);
+    // candidate calls: a known function, every argument constant
+    const cands = [];
+    for (const v of fnList) {
+      for (const r of v.references) {
+        const c = r.identifier.parent;
+        if (!c || c.type !== 'CallExpression' || c.optional || c.callee !== r.identifier || c.arguments.length === 0) continue;
+        const fns = new Set([v]);
+        if (!c.arguments.every((a) => constArg(a, ctx.cache, fns, fnVars))) continue;
+        // f(...).length / f(...)[0]: evaluate the read too (the call may return an array)
+        const m = c.parent;
+        const read = m && m.type === 'MemberExpression' && m.object === c && staticValue(m.computed ? m.property : { type: 'Literal', value: m.property.name }, ctx.cache) !== NOT &&
+          !(m.parent.type === 'CallExpression' && m.parent.callee === m) && !(m.parent.type === 'AssignmentExpression' && m.parent.left === m) &&
+          m.parent.type !== 'UpdateExpression' && !(m.parent.type === 'UnaryExpression' && m.parent.operator === 'delete');
+        cands.push({ v, c: read ? m : c, fns });
+      }
+    }
+    // only the outermost: an inner call is evaluated as part of the outer one
+    const outer = cands.filter((x) => !cands.some((y) => y !== x && isInside(x.c, y.c)));
+    const byFn = new Map();
+    for (const x of outer) {
+      if (!byFn.has(x.v)) byFn.set(x.v, { calls: [], fns: new Set() });
+      const g = byFn.get(x.v);
+      g.calls.push(x.c);
+      for (const f of x.fns) g.fns.add(f);
+    }
+    const contexts = new Map();
+    const contextOf = (f) => {
+      if (!contexts.has(f)) {
+        const root = declStatementOf(f);
+        contexts.set(f, root ? collectContext(root) : null);
+      }
+      return contexts.get(f);
+    };
     const plans = [];
-    for (const v of functionVariables(tree)) {
-      const calls = v.references
-        .map((r) => r.identifier.parent)
-        .filter((c) => c && c.type === 'CallExpression' && !c.optional && c.arguments.length > 0 &&
-          c.arguments.every((a) => a.type !== 'SpreadElement' && isPrimitive(staticValue(a, ctx.cache)) && staticValue(a, ctx.cache) !== NOT));
-      if (!calls.length) continue;
-      const root = declStatementOf(v);
-      if (!root) continue;
-      const context = collectContext(root);
-      if (!context) continue;
-      const outside = calls.filter((c) => !context.stmts.some((s) => isInside(c, s)) && c.callee.variable === v);
+    for (const [v, g] of byFn) {
+      const parts = [...g.fns].map(contextOf);
+      if (parts.some((p) => !p)) continue;
+      const stmts = [...new Set(parts.flatMap((p) => p.stmts))].sort((a, b) => a.range[0] - b.range[0]);
+      const vars = new Set(parts.flatMap((p) => [...p.vars]));
+      const own = contextOf(v);
+      const outside = g.calls.filter((c) => !stmts.some((s) => isInside(c, s)));
       if (!outside.length) continue;
-      plans.push({ v, context, calls: outside });
+      plans.push({ v, context: { stmts, vars }, own, calls: outside });
     }
     if (!plans.length) return 0;
 
     if (ctx.options.planOnly) { ctx.planned = plans.reduce((n, p) => n + p.calls.length, 0); return 0; } // static mode: count, never run
-    const jobs = plans.map((p) => ({ prelude: preludeOf(p.context.stmts), exprs: p.calls.map((c) => generate(c)) }));
+    const jobs = plans.map((p) => ({ prelude: preludeOf(p.context.stmts), exprs: p.calls.map((c) => generate(standalone(c, ctx.cache))) }));
     const results = runJobs(jobs, ctx.options.sandbox);
 
     plans.forEach((plan, i) => {
@@ -167,9 +258,11 @@ export default {
       // everything resolved and nothing else uses the context -> drop decoder, array and rotators
       if (resolved === plan.calls.length && ctx.options.removeDeadCode !== false) {
         const resolvedSet = new Set(plan.calls);
-        const used = [...plan.context.vars].some((cv) => cv.references.some((r) =>
-          !plan.context.stmts.some((s) => isInside(r.identifier, s)) && !resolvedSet.has(r.identifier.parent)));
-        if (!used) for (const s of plan.context.stmts) ctx.remove(s);
+        const { stmts, vars } = plan.own;
+        const inResolved = (id) => plan.calls.some((c) => isInside(id, c));
+        const used = [...vars].some((cv) => cv.references.some((r) =>
+          !stmts.some((s) => isInside(r.identifier, s)) && !resolvedSet.has(r.identifier.parent) && !inResolved(r.identifier)));
+        if (!used) for (const s of stmts) ctx.remove(s);
       }
     });
     return ctx.count;

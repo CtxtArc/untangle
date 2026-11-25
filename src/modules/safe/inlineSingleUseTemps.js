@@ -65,7 +65,7 @@ function readFirst(id, stmt, writtenGlobals) {
         case 'ThrowStatement':
           return true;
         case 'VariableDeclaration':
-          return n.declarations.length === 1 && n.declarations[0].init === child;
+          return n.declarations.length === 1 && n.declarations[0] === child; // read inside its initialiser
         case 'IfStatement':
         case 'SwitchStatement':
           return child === n.test || child === n.discriminant;
@@ -170,6 +170,9 @@ export default {
       if (!w || !rd) continue;
       const site = writeSite(w, v);
       if (!site || !inStatementList(site.stmt)) continue;
+      // object / array / function literals stay bound: proxy-object, constant-array and proxy-function
+      // passes work on bindings, and inlining a literal into an expression never reads better
+      if (/^(ObjectExpression|ArrayExpression|FunctionExpression|ArrowFunctionExpression|ClassExpression)$/.test(site.value.type)) continue;
       const list = site.stmt.parent[site.stmt.parentKey];
       const next = list[site.stmt.parentIndex + 1];
       if (!next) continue;

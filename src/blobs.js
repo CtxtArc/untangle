@@ -100,6 +100,7 @@ export function extractBlobs(code, dir, { minLength = 2048 } = {}) {
       `sha256 ${entry.sha256}, saved as ${entry.file}]`;
     delete n.raw;
   });
+  if (!blobs.length) return { code: tree.generate(), blobs }; // nothing extracted: leave the directory alone
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(blobs, null, 2) + '\n');
   return { code: tree.generate(), blobs };
 }

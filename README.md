@@ -119,7 +119,7 @@ only report what they would have evaluated.
 | `inlineConstants` | `var s = 'x'; f(s)` → `f('x')` (single def, never reassigned, not read before its declaration) |
 | `resolveMemberAccess` | `['a','b'][1]`, `'abc'.length`, and constant arrays that never escape or mutate |
 | `inlineProxyVariables` | `var b = a; b()` → `a()` when `a` resolves to the same binding at every use |
-| `inlineSingleUseTemps` | `t = decode(x); eval(t)` → `eval(decode(x))` when `t` is written and read exactly once, in adjacent statements, with only constants evaluated before the read |
+| `inlineSingleUseTemps` | `t = decode(x); eval(t)` → `eval(decode(x))` when `t` is written and read exactly once, in adjacent statements, with only constants evaluated before the read (object / array / function literals stay bound for the passes that resolve them) |
 | `resolveProxyObjects` | obfuscator.io proxy objects: `o.aBc(x, y)` → `x + y`, `o.k` → `'log'` |
 | `inlineProxyFunctions` | single-`return` wrappers: `w('k', 0x20)` → `dec(0x20 - 0x1a, 'k')`; single-statement wrappers called as statements: `run(x);` → `eval(dec(x));` (with `eval` only if the wrapper has no locals) |
 | `unflattenControlFlow` | `'2\|0\|1'.split('\|')` + `while(true) switch(o[i++])` dispatchers → straight-line code |
@@ -132,7 +132,7 @@ only report what they would have evaluated.
 | `resolveBuiltinCalls` 🔒 | what `foldBuiltinCalls` refuses (e.g. regex arguments), in the sandbox; follows constant variables, so a 12-step `a.split('?').join('')` chain resolves in one evaluation |
 | `resolveConstantLoops` 🔒 | `var out = ''; for (…) out += String.fromCharCode(parseInt(blob.substr(i, 2), 16) ^ key.charCodeAt(…))` → `var out = '<decoded>'` |
 | `resolveEvalArguments` 🔒 | `eval(function(p,a,c,k,e,d){...}(...))` (Dean Edwards packer), `eval(atob(...))` |
-| `resolveDecoderCalls` 🔒 | string-array decoders: evaluates calls with literal arguments together with their context |
+| `resolveDecoderCalls` 🔒 | string-array decoders and other pure helpers: evaluates calls with constant arguments (literals, literal arrays/objects, constant string bindings, nested calls such as `cipher(unpack('…'), unpack('…'))`, and `f(…).length`) together with their context |
 
 🔒 = evaluates code from the sample inside the sandbox; only with `--dyn`. ⚠ = heuristic: exact only if the runtime
 part of the concatenation never contains a separator character; it only fires for separators
@@ -145,8 +145,8 @@ every string literal of at least `--blob-min` characters (default 2048) into a f
 base64, identifies the result (PE with arch / EXE vs DLL / timestamp, ELF, ZIP, gzip, PDF, RAR,
 7z, Lua and LuaJIT bytecode) and replaces the literal in the output with a placeholder carrying
 its SHA-256. Text payloads are labelled with their language when it is clear (Lua source,
-PowerShell, VBScript, JavaScript, XML, HTML). `manifest.json` lists everything. Nothing
-extracted is executed.
+PowerShell, VBScript, JavaScript, XML, HTML). `manifest.json` lists everything (it is only
+written when something was extracted). Nothing extracted is executed.
 
 ```
 $ untangle --dyn dropper.js --extract-blobs blobs -o clean.js
@@ -157,7 +157,7 @@ blob 3: PE x64 DLL, timestamp 1970-01-01, 449691 bytes, sha256 <64 hex> -> blob3
 
 ### How decoder resolution works
 
-For each function called with literal-only arguments, `resolveDecoderCalls` collects its
+For each function called with constant arguments, `resolveDecoderCalls` collects its
 **context**: its declaration, the declarations of every binding it references (transitively),
 `name = function () {}` reassignments, and IIFEs that receive one of those bindings as an
 argument (the string-array rotators). The context runs once as a prelude in a fresh
@@ -167,6 +167,21 @@ sandbox, then every call is evaluated **twice**. A result is accepted only if:
 - both evaluations return the same value (`Math.random` and `Date` throw in the sandbox),
 - neither evaluation changes global state, apart from a global function being replaced by
   another function (self-redefining decoders).
+
+Constant arguments are primitives, fresh array / object literals of constants (the sandbox gets
+its own copy, so whatever the call does to them is invisible to the program), bindings that are
+never reassigned and hold a primitive (`var buf = '<29 KB>'`, substituted by value), and nested
+calls to other functions with constant arguments, whose contexts join the prelude. Only the
+outermost such call is evaluated, so a three-stage chain like
+
+```js
+var buf = streamCipher(unb64('<38 KB>'), unb64('key…'), unb64('nonce…'));   // -> '<29 KB plaintext>'
+var api = [slice(buf, 21081, [63, 56, 4, 21, 80]), ...];                     // -> ['Sleep', ...]
+if (count(keep(['cfg', 'node', 'lane'])) > 0) ...                            // -> if (11 > 0)
+```
+
+resolves in two rounds. A binding that holds an array is never treated as constant (the call
+could mutate it), and results must still be strings, numbers or booleans.
 
 When every call to a decoder is resolved and nothing else uses its context, the decoder,
 its string array and its rotator are removed.
@@ -254,6 +269,8 @@ with `--dyn` on live samples only inside a disposable analysis VM.
 ## Known limits / next steps
 
 - Proxy objects built by later assignment (`o = {}; o.k = ...`) are not resolved yet, only literals.
+- Constant arrays passed to other functions are not folded (`var a = ['Sleep', ...]; WScript[a[0]](…); helper(a)`):
+  that needs proving the callee only reads them.
 - obfuscator.io `selfDefending` / `debugProtection` code can hang the prelude: it times out and
   that decoder is skipped. Use `--disable` or strip the guard first.
 - Decoders that keep a cache in a global plain object are rejected by the side-effect check:
