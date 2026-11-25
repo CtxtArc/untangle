@@ -31,13 +31,83 @@ export function declarator(v) {
   return def && def.type === 'Variable' && def.node.type === 'VariableDeclarator' ? def.node : null;
 }
 
-/** Any read of v that happens textually before its declaration within the same function (hoisting / TDZ hazard). */
+const FN = /^(FunctionDeclaration|FunctionExpression|ArrowFunctionExpression)$/;
+
+const earlyCache = new WeakMap();
+
+/**
+ * Hoisted function declarations that may run while `list.slice(0, idx)` executes: every function
+ * those statements mention, and transitively every function mentioned by those (a mention also
+ * covers callbacks and aliases: the values written to variables they mention are followed too).
+ * Returns null when anything could run (eval, with, computed access on `this`).
+ */
+function mayRunBefore(list, idx) {
+  let byIdx = earlyCache.get(list);
+  if (!byIdx) earlyCache.set(list, (byIdx = new Map()));
+  if (byIdx.has(idx)) return byIdx.get(idx);
+  const fns = new Set();
+  const vars = new Set();
+  let dynamic = false;
+  const queue = list.slice(0, idx);
+  const visit = (root) => walk(root, (x) => {
+    if (x.type === 'WithStatement') dynamic = true;
+    if (x.type === 'MemberExpression' && x.computed && x.object.type === 'ThisExpression') dynamic = true;
+    if (x.type !== 'Identifier') return;
+    if (!x.variable) { if (x.name === 'eval' || x.name === 'Function') dynamic = true; return; }
+    const v = x.variable;
+    for (const d of v.defs) {
+      if (d.type === 'FunctionName' && d.node.type === 'FunctionDeclaration' && !fns.has(d.node)) { fns.add(d.node); queue.push(d.node.body); }
+    }
+    if (!vars.has(v)) {
+      vars.add(v); // follow what the variable may hold: its initialiser and every value written to it
+      for (const d of v.defs) if (d.type === 'Variable' && d.node.init) queue.push(d.node.init);
+      for (const r of v.references) if (r.isWrite() && r.writeExpr) queue.push(r.writeExpr);
+    }
+  });
+  while (queue.length && !dynamic) visit(queue.pop());
+  const out = dynamic ? null : fns;
+  byIdx.set(idx, out);
+  return out;
+}
+
+/**
+ * Could some read of v run before its declaration has run (hoisting / TDZ / conditional declaration)?
+ * A read is safe only if it sits in a later statement of the declaration's own statement list (so the
+ * declaration always ran first), or inside a function created after it. A read inside a hoisted
+ * function declaration is safe only when nothing but declarations precede the declaration in the
+ * function body, so that function cannot have been called earlier.
+ */
 export function readBeforeDeclaration(v) {
+  return v.references.some((r) => r.isRead() && readMayPrecede(v, r.identifier));
+}
+
+/** Could this read of v (an Identifier) run before v's declaration has run? See readBeforeDeclaration. */
+export function readMayPrecede(v, id) {
   const d = v.defs[0];
   if (!d) return true;
-  const declStart = d.node.range ? d.node.range[0] : 0;
-  return v.references.some((r) => r.isRead() && r.identifier.range[0] < declStart &&
-    r.from.variableScope === v.scope.variableScope);
+  if (d.type !== 'Variable') {
+    const declStart = d.node.range ? d.node.range[0] : 0;
+    return id.range[0] < declStart && id.reference && id.reference.from.variableScope === v.scope.variableScope;
+  }
+  const stmt = d.parent;
+  const list = stmt && stmt.parent && stmt.parent[stmt.parentKey];
+  if (!Array.isArray(list) || stmt.parentIndex == null) return true; // for-loop heads etc.
+  const idx = stmt.parentIndex;
+  if (id.range[0] < stmt.range[1]) return true;
+  for (let n = id; n && n.parent; n = n.parent) {
+    // only declarations directly in a function body / the program are hoisted to its start; one inside a
+    // block exists once the block runs, so the block's own position decides (checked further up)
+    const hoisted = n.type === 'FunctionDeclaration' && (n.parent.type === 'Program' ||
+      (n.parent.type === 'BlockStatement' && n.parent.parent && FN.test(n.parent.parent.type)));
+    if (hoisted && n.parent[n.parentKey] === list) {
+      // a hoisted function in the declaration's own body: unsafe only if code before the declaration can reach it
+      const early = mayRunBefore(list, idx);
+      return !early || early.has(n);
+    }
+    if (hoisted && !(n.parent.parent && FN.test(n.parent.parent.type))) return true; // hoisted at a level we don't track
+    if (n.parent[n.parentKey] === list && n.parentIndex != null) return n.parentIndex <= idx;
+  }
+  return true; // outside the declaration's block: it may not have run
 }
 
 /** Is the node used as a write target (assignment, update, delete, for-in/of target, pattern)? */

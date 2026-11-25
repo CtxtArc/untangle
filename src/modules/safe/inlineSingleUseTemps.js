@@ -13,23 +13,7 @@
 import { propName, NOT, isPureNode } from '../../values.js';
 import { inStatementList } from '../../ast.js';
 import { isConstVariable } from '../../utils.js';
-import { evalCanSee } from './cleanup.js';
-
-/** Can a script reach global-object properties by computed name or through an alias of the global? */
-function globalsReachable(tree) {
-  if (tree.sourceType !== 'script') return true;
-  if (tree.scopeManager.scopes.some((s) => s.type === 'with')) return true;
-  const aliases = new Set(['window', 'self', 'globalThis', 'top', 'parent', 'frames']);
-  for (const n of tree.nodes) {
-    const g = (n.type === 'ThisExpression' && tree.scopeAt(n).variableScope.type === 'global') ||
-      (n.type === 'Identifier' && aliases.has(n.name) && n.reference && !n.reference.resolved);
-    if (!g) continue;
-    const m = n.parent;
-    if (m.type === 'MemberExpression' && m.object === n && propName(m) !== NOT) continue;
-    return true;
-  }
-  return false;
-}
+import { evalCanSee, globalsReachable } from './cleanup.js';
 
 function memberGlobalNames(tree) {
   const names = new Set();

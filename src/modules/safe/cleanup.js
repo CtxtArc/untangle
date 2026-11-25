@@ -121,6 +121,22 @@ export function evalCanSee(scope) {
 }
 
 /** Can a script reach global-object properties by computed name or through an alias of the global? */
+export function globalsReachable(tree) {
+  if (tree.sourceType !== 'script') return true;
+  if (tree.scopeManager.scopes.some((s) => s.type === 'with')) return true;
+  const aliases = new Set(['window', 'self', 'globalThis', 'top', 'parent', 'frames']);
+  for (const n of tree.nodes) {
+    const g = (n.type === 'ThisExpression' && tree.scopeAt(n).variableScope.type === 'global') ||
+      (n.type === 'Identifier' && aliases.has(n.name) && n.reference && !n.reference.resolved);
+    if (!g) continue;
+    const m = n.parent;
+    if (m.type === 'MemberExpression' && m.object === n && propName(m) !== NOT) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Can a script reach global-object properties by computed name or through an alias of the global? */
 function globalsEscape(tree) {
   if (tree.sourceType !== 'script') return true;
   for (const s of tree.scopeManager.scopes) {
@@ -413,8 +429,10 @@ export const removeDeadCode = {
       }
     }
 
+    const globalsByName = globalsReachable(tree);
     for (const scope of tree.scopeManager.scopes) {
       if (scope.type === 'global' && ctx.options.keepGlobals) continue;
+      if (scope.type === 'global' && globalsByName) continue; // this[k](), window[k], with: any global may be used
       if (evalCanSee(scope)) continue; // a direct eval in or below this function can read any local by name
       next: for (const v of scope.variables) {
         if (!v.defs.length) continue;

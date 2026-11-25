@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10.0
+
+- New `normalizeDeclarations`: `x = v; ...; var x;` (an obfuscator trick that hoists every
+  declaration to the end of its function and turns `const` into assignments, so that every binding
+  looks reassigned) becomes `var x = v;` at the assignment. With it, a sample with five chained
+  obfuscator.io string arrays resolves completely: 835 -> 170 lines.
+- `resolveDecoderCalls`: removes decoder machinery (string arrays, decoders, rotators) once nothing
+  outside uses it, if every statement in it touches only the machinery, its locals and pure globals.
+- Fix: constants were inlined into reads that may run before the declaration: past a conditional
+  block holding it (`if (c) { var x = 'a' } log(x)`), and into hoisted functions called before it
+  (`f(); var x = 'a'; function f() { log(x) }`). The check is now per read and follows which
+  hoisted functions code before the declaration can reach.
+- Fix: `removeDeadCode` removed unused global functions even when `this[k]()` / `window[k]` /
+  `with` could call them by name.
+- Fix: `--rename` could pick `toString` / `constructor` from `Object.prototype` as a name and
+  produce unparsable output.
+
 ## 0.9.0
 
 - `resolveDecoderCalls` (`--dyn`): arguments no longer have to be literal primitives. Constant

@@ -113,6 +113,7 @@ only report what they would have evaluated.
 | `normalizeComputed` | `a['b']` → `a.b`, `{'k': 1}` → `{k: 1}` (keeps `__proto__` / `constructor` semantics) |
 | `simplifyBranches` | static `if` / `?:` / `&&` / `\|\|` / `??` / `while(false)`, keeping hoisted `var`s; empty branches: `if (c) {} else S` → `if (!c) S` |
 | `splitSequences` | `a(), b()` → `a(); b();`, `return a(), b` → `a(); return b`, `var a, b` → two decls |
+| `normalizeDeclarations` | `x = v; …; var x;` (declarations hoisted to the end of the function, `const` turned into assignments) → `var x = v;` at the assignment, when it sits at the top level of the function body |
 | `mergeAccumulators` | `var s = ''; s += 'ab'; s += 'cd'` → `var s = 'abcd'` for runs of literal appends with no read in between (linear even for 10k+ appends) |
 | `splitRedeclarations` | `var s = 'a'; use(s); var s = 'b'; use(s)`, `s = s.split('#').join('')` and `s += x` → `s` / `s_1` / `s_2`, when the definitions are straight-line (bindings with over 1000 definitions are left alone) |
 | `foldJoinLoops` | `for (var i = 0; i < a.length; i++) { s += a[i]; }` → `s += a.join('')` when `a` is a constant array of strings and `i` is not used after the loop |
@@ -132,7 +133,7 @@ only report what they would have evaluated.
 | `resolveBuiltinCalls` 🔒 | what `foldBuiltinCalls` refuses (e.g. regex arguments), in the sandbox; follows constant variables, so a 12-step `a.split('?').join('')` chain resolves in one evaluation |
 | `resolveConstantLoops` 🔒 | `var out = ''; for (…) out += String.fromCharCode(parseInt(blob.substr(i, 2), 16) ^ key.charCodeAt(…))` → `var out = '<decoded>'` |
 | `resolveEvalArguments` 🔒 | `eval(function(p,a,c,k,e,d){...}(...))` (Dean Edwards packer), `eval(atob(...))` |
-| `resolveDecoderCalls` 🔒 | string-array decoders and other pure helpers: evaluates calls with constant arguments (literals, literal arrays/objects, constant string bindings, nested calls such as `cipher(unpack('…'), unpack('…'))`, and `f(…).length`) together with their context |
+| `resolveDecoderCalls` 🔒 | string-array decoders and other pure helpers: evaluates calls with constant arguments (literals, literal arrays/objects, constant string bindings, nested calls such as `cipher(unpack('…'), unpack('…'))`, and `f(…).length`) together with their context; afterwards removes decoder machinery (string arrays, decoders, rotators) that nothing else uses and that touches nothing but itself |
 
 🔒 = evaluates code from the sample inside the sandbox; only with `--dyn`. ⚠ = heuristic: exact only if the runtime
 part of the concatenation never contains a separator character; it only fires for separators
@@ -251,6 +252,11 @@ Every transform is written to preserve behaviour. Bindings are tracked with esli
 so shadowing, reassignment, hoisting/TDZ, argument evaluation order, recursion, strict mode,
 and `__proto__`/`constructor` keys are all checked before anything is rewritten. When a
 module produces code that does not parse, it is reverted and disabled for the rest of the run.
+
+Constants are only inlined into reads that surely run after the declaration: not past a
+conditional block that holds the declaration, and not into a hoisted function that code before
+the declaration can call (directly, through other functions, aliases or callbacks). Scripts that
+reach globals by computed name (`this[k]`, `window[k]`, `with`) keep every top-level binding.
 
 **Static by default:** without `--dyn` nothing from the input is executed; untangle only parses,
 rewrites and folds literal data with a whitelist interpreter.

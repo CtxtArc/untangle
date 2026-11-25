@@ -187,6 +187,25 @@ function standalone(n, cache) {
   }
 }
 
+const PURE_GLOBALS = new Set(['parseInt', 'parseFloat', 'Number', 'String', 'Boolean', 'Array', 'Math', 'isNaN', 'isFinite',
+  'undefined', 'NaN', 'Infinity']);
+
+/** Does `stmt` only touch the context's bindings, its own locals and pure globals (no `this`)? */
+function onlyTouches(stmt, vars) {
+  let ok = true;
+  walk(stmt, (n) => {
+    if (!ok) return;
+    if (n.type === 'ThisExpression' || n.type === 'WithStatement') { ok = false; return; }
+    if (n.type !== 'Identifier' || !n.reference) return;
+    const v = n.variable;
+    if (!v) { if (!PURE_GLOBALS.has(n.name)) ok = false; return; }
+    if (vars.has(v)) return;
+    if (v.defs.some((d) => isInside(d.name, stmt))) return; // declared inside: a local / parameter
+    ok = false;
+  });
+  return ok;
+}
+
 export default {
   name: 'resolveDecoderCalls',
   unsafe: true,
@@ -238,9 +257,21 @@ export default {
       if (!outside.length) continue;
       plans.push({ v, context: { stmts, vars }, own, calls: outside });
     }
-    if (!plans.length) return 0;
-
     if (ctx.options.planOnly) { ctx.planned = plans.reduce((n, p) => n + p.calls.length, 0); return 0; } // static mode: count, never run
+    // decoder machinery nothing outside uses any more (string arrays, decoders, rotators that only shuffle them)
+    if (ctx.options.removeDeadCode !== false) {
+      const busy = new Set(plans.flatMap((p) => p.context.stmts));
+      for (const f of fnList) {
+        const c = contextOf(f);
+        if (!c || c.stmts.some((st) => busy.has(st))) continue;
+        const outside = [...c.vars].some((cv) => cv.references.some((r) => !c.stmts.some((st) => isInside(r.identifier, st))));
+        if (outside || !c.stmts.every((st) => st.type === 'FunctionDeclaration' || onlyTouches(st, c.vars))) continue;
+        if (!ctx.canReplaceAll(c.stmts)) continue;
+        for (const st of c.stmts) { ctx.remove(st); busy.add(st); }
+        ctx.log(`resolveDecoderCalls: removed unused decoder context of ${f.name} (${c.stmts.length} statements)`);
+      }
+    }
+    if (!plans.length) return ctx.count;
     const jobs = plans.map((p) => ({ prelude: preludeOf(p.context.stmts), exprs: p.calls.map((c) => generate(standalone(c, ctx.cache))) }));
     const results = runJobs(jobs, ctx.options.sandbox);
 

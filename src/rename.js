@@ -51,7 +51,7 @@ const camel = (s) => {
 function comName(arg) {
   if (!arg || arg.type !== 'Literal' || typeof arg.value !== 'string') return null;
   const id = arg.value.replace(/^new:/i, '').toLowerCase();
-  if (COM[id]) return COM[id];
+  if (Object.hasOwn(COM, id)) return COM[id];
   if (/^winmgmts/i.test(arg.value)) return 'wmi';
   const last = id.split('.').filter((p) => !/^\d+$/.test(p)).pop();
   return last ? camel(last) : null;
@@ -86,7 +86,7 @@ function fromValue(init) {
       if (cname === 'ActiveXObject' || cname === 'CreateObject' || cname === 'GetObject') return comName(init.arguments[0]);
       if (cname === NOT || typeof cname !== 'string') return null;
       if (c.type === 'MemberExpression' && c.object.type === 'Identifier' && !c.object.variable && c.object.name === 'Math') return 'num';
-      if (STRING_METHODS[cname]) return STRING_METHODS[cname];
+      if (Object.hasOwn(STRING_METHODS, cname)) return STRING_METHODS[cname]; // own keys only: never toString / constructor
       if (cname === 'ExpandEnvironmentStrings' && init.arguments[0]?.type === 'Literal') return camel(String(init.arguments[0].value).replace(/%/g, '')) || 'envPath';
       if (cname === 'SpecialFolders' && init.arguments[0]?.type === 'Literal') return camel(init.arguments[0].value);
       if (/^(CreateTextFile|OpenTextFile|GetFile)$/.test(cname)) return 'file';

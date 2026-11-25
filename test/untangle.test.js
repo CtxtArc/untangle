@@ -440,6 +440,10 @@ test('--rename: readable names from use, never changing behaviour', () => {
   assert.match(rn('function f(_0xabc) { return { _0xabc }; } use(f);'), /_0xabc: arg1/);
   // new names never collide with existing ones (fn1 taken -> fn2)
   assert.match(rn('var fn1 = g(); function _0xabc() { return fn1; } use(_0xabc);'), /function fn2\(\) \{\s*return fn1;/);
+  // names are looked up as own keys: toString / constructor never become names
+  const proto = rn('function f(_0xabc) { var _0xdef = (_0xabc & 255).toString(16); var _0x123 = _0xabc.constructor; return [_0xdef, _0x123, _0xdef, _0x123]; } use(f);');
+  assert.match(proto, /var v1 = \(arg1 & 255\)\.toString\(16\)/);
+  assert.doesNotMatch(proto, /native code/);
   // off by default
   assert.match(deobfuscate('function f(_0xabc) { return _0xabc * 2; } use(f);').code, /_0xabc/);
 });
@@ -483,4 +487,34 @@ test('--extract-blobs leaves no manifest when nothing was extracted', async () =
     assert.equal(r.blobs.length, 0);
     assert.equal(fs.existsSync(`${dir}/manifest.json`), false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('hoisted declarations are put back; constants only reach reads that surely run after them', () => {
+  const st = (c) => deobfuscate(c).code;
+  // obfuscator pattern: `x = v` with a bare `var x` at the end of the function
+  assert.equal(st('function f() { x = g(); use(x, x); var x; } h(f);'), norm('function f() { var x = g(); use(x, x); } h(f);'));
+  assert.equal(st('function d(i) { return [i]; } function f() { a = d; return [a(1), a(2)]; var a; } h(f);'),
+    norm('function f() { return [[1], [2]]; } h(f);')); // the alias goes, then the proxy function too
+  assert.match(st('function f() { if (c) { x = g(); } use(x, x); var x; } h(f);'), /var x;/);    // not from inside a branch
+  // a declaration in a branch does not reach reads after the branch
+  assert.equal(st('if (c) { var x = "a"; } log(x);'), norm("if (c) { var x = 'a'; } log(x);"));
+  // a hoisted function called before the declaration sees undefined
+  assert.equal(st('f(); var x = "a"; function f() { log(x); }'), norm("log(x); var x = 'a';"));
+  assert.equal(st('g(); var x = "a"; function f() { log(x); } function g() { f(); }'), norm("log(x); var x = 'a';"));
+  assert.equal(st('var y = f; y(); var x = "a"; function f() { log(x); }'), norm("log(x); var x = 'a';"));
+  // ... but one only called afterwards is fine, and so is a function declared inside a later block
+  assert.equal(st('h(); var x = "a"; function f() { log(x); } function h() {} f();'), norm("h(); function h() { } log('a');"));
+  assert.equal(st('f(); var x = "a"; try { function g() { log(x); } g(); } catch (e) {}'), norm("f(); try { log('a'); } catch (e) { }"));
+  // this[k]() may call any global function: nothing global is removed or inlined into it
+  assert.match(st('this[k](); var x = "a"; function f() { log(x); } f();'), /function f\(\) \{\s*log\(x\);/);
+});
+
+test('unused decoder machinery is removed only when it touches nothing else', () => {
+  const machinery = "function arr() { var a = ['b', 'a']; arr = function () { return a; }; return arr(); }" +
+    ' function dec(i) { var a = arr(); dec = function (j) { return a[j]; }; return dec(i); }' +
+    " (function (f) { var a = f(); while (a[0] !== 'a') { a.push(a.shift()); } }(arr));";
+  assert.equal(deob(machinery + ' log(dec(0) + dec(1));'), norm("log('ab');"));
+  // a rotator that also does something else keeps the whole context
+  const busy = machinery.replace('a.push(a.shift()); }', 'a.push(a.shift()); } WScript.Echo(1);');
+  assert.match(deob(busy + ' log(dec(0) + dec(1));'), /WScript\.Echo\(1\)/);
 });
