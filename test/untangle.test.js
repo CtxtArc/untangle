@@ -280,7 +280,8 @@ test('static builtin folding: literal string ops only, never regex, never mutati
   assert.match(st("x = 'abc'.replace('b', function () { return evil(); });"), /evil/);
   for (const dynamic of [false, true]) {
     const out = deobfuscate('var a = [3,1,2]; x = a.reverse().join(); y = a.join(); r(x, y);', { dynamic }).code;
-    assert.match(out, /y = a\.join\(\)/, `mutated array must not be folded (dynamic=${dynamic})`);
+    assert.match(out, /a\.reverse\(\)\.join\(\), a\.join\(\)/, `mutated array must not be folded (dynamic=${dynamic})`);
+    assert.doesNotMatch(out, /'[123],[123],[123]'/);
   }
 });
 
@@ -517,4 +518,21 @@ test('unused decoder machinery is removed only when it touches nothing else', ()
   // a rotator that also does something else keeps the whole context
   const busy = machinery.replace('a.push(a.shift()); }', 'a.push(a.shift()); } WScript.Echo(1);');
   assert.match(deob(busy + ' log(dec(0) + dec(1));'), /WScript\.Echo\(1\)/);
+});
+
+test('constants assigned once by a plain statement; pure temps past plain copies', () => {
+  const st = (c) => deobfuscate(c).code;
+  assert.equal(st('try { if (c) { a = "po"; b = "wer"; run(a + b + x); } } catch (e) {} var a, b;'), norm("try { if (c) { run('power' + x); } } catch (e) { }"));
+  assert.equal(st('if (c) { a = "x"; } log(a); var a;'), norm("if (c) { a = 'x'; } log(a); var a;"));          // may not have run
+  assert.equal(st('log(a); a = "x"; var a;'), norm("log(a); var a = 'x';"));                                     // read first
+  assert.match(st('for (var i = 0; i < 2; i++) { log(t); t = "k"; } var t;'), /log\(t\)/);                     // next iteration
+  assert.match(st('a = "x"; this[k] = 1; log(a); var a;'), /log\(a\)/);                                         // this[k] may write it
+  assert.match(st('var a = "x"; this[k] = 1; log(a);'), /log\(a\)/);
+  // v5 = exePath; v6 = path2; f(v5 + v6) -> f(exePath + path2)
+  assert.equal(st('function f(e, p) { var c = g(); v5 = e; v6 = p; v7 = c; c2 = "x" + v5 + v6 + v7; run(c2, 0); var v5, v6, v7, c2; } use(f);'),
+    norm("function f(e, p) { var c = g(); run('x' + e + p + c, 0); } use(f);"));
+  // never past a copy that writes what the value reads, and never with a call
+  assert.match(st('function f(e) { t = e; e = 2; run(t); var t; } use(f);'), /t = e/);
+  assert.match(st('function f(e) { t = e(); u = g(); run(u, t); var t, u; } use(f);'), /var t = e\(\);\s*run\(g\(\), t\)/); // e() must still run before g()
+  assert.match(st('function f(p) { t = arguments[0]; p = 5; run(t); var t; } use(f);'), /t = arguments\[0\]/);
 });

@@ -117,10 +117,10 @@ only report what they would have evaluated.
 | `mergeAccumulators` | `var s = ''; s += 'ab'; s += 'cd'` → `var s = 'abcd'` for runs of literal appends with no read in between (linear even for 10k+ appends) |
 | `splitRedeclarations` | `var s = 'a'; use(s); var s = 'b'; use(s)`, `s = s.split('#').join('')` and `s += x` → `s` / `s_1` / `s_2`, when the definitions are straight-line (bindings with over 1000 definitions are left alone) |
 | `foldJoinLoops` | `for (var i = 0; i < a.length; i++) { s += a[i]; }` → `s += a.join('')` when `a` is a constant array of strings and `i` is not used after the loop |
-| `inlineConstants` | `var s = 'x'; f(s)` → `f('x')` (single def, never reassigned, not read before its declaration) |
+| `inlineConstants` | `var s = 'x'; f(s)` → `f('x')` (single def, never reassigned), and `s = 'x'; f(s)` when that plain assignment is the binding's only write (`str1 = 'pow'; str2 = 'er'; … run(str1 + str2 + …)` → `run('power…')`); only into reads that surely run after it |
 | `resolveMemberAccess` | `['a','b'][1]`, `'abc'.length`, and constant arrays that never escape or mutate |
 | `inlineProxyVariables` | `var b = a; b()` → `a()` when `a` resolves to the same binding at every use |
-| `inlineSingleUseTemps` | `t = decode(x); eval(t)` → `eval(decode(x))` when `t` is written and read exactly once, in adjacent statements, with only constants evaluated before the read (object / array / function literals stay bound for the passes that resolve them) |
+| `inlineSingleUseTemps` | `t = decode(x); eval(t)` → `eval(decode(x))` when `t` is written and read exactly once, in adjacent statements, with only constants evaluated before the read; a side-effect-free value (`v5 = exePath`) may also move past plain copies that don't write what it reads (object / array / function literals stay bound for the passes that resolve them) |
 | `resolveProxyObjects` | obfuscator.io proxy objects: `o.aBc(x, y)` → `x + y`, `o.k` → `'log'` |
 | `inlineProxyFunctions` | single-`return` wrappers: `w('k', 0x20)` → `dec(0x20 - 0x1a, 'k')`; single-statement wrappers called as statements: `run(x);` → `eval(dec(x));` (with `eval` only if the wrapper has no locals) |
 | `unflattenControlFlow` | `'2\|0\|1'.split('\|')` + `while(true) switch(o[i++])` dispatchers → straight-line code |
@@ -256,7 +256,8 @@ module produces code that does not parse, it is reverted and disabled for the re
 Constants are only inlined into reads that surely run after the declaration: not past a
 conditional block that holds the declaration, and not into a hoisted function that code before
 the declaration can call (directly, through other functions, aliases or callbacks). Scripts that
-reach globals by computed name (`this[k]`, `window[k]`, `with`) keep every top-level binding.
+reach globals by computed name (`this[k]`, `window[k]`, `with`) keep every top-level binding, and
+no top-level constant is inlined there either (`this[k] = …` could overwrite it).
 
 **Static by default:** without `--dyn` nothing from the input is executed; untangle only parses,
 rewrites and folds literal data with a whitelist interpreter.

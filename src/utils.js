@@ -89,7 +89,15 @@ export function readMayPrecede(v, id) {
     const declStart = d.node.range ? d.node.range[0] : 0;
     return id.range[0] < declStart && id.reference && id.reference.from.variableScope === v.scope.variableScope;
   }
-  const stmt = d.parent;
+  return mayPrecedeStatement(d.parent, id);
+}
+
+/**
+ * Could the read `id` run before statement `stmt` (a declaration or an assignment statement) has run?
+ * Safe only in a later statement of the same list, or in a function created after it; a hoisted
+ * function in that list counts as safe only if code before `stmt` cannot reach it.
+ */
+export function mayPrecedeStatement(stmt, id) {
   const list = stmt && stmt.parent && stmt.parent[stmt.parentKey];
   if (!Array.isArray(list) || stmt.parentIndex == null) return true; // for-loop heads etc.
   const idx = stmt.parentIndex;

@@ -8,12 +8,15 @@
 //   - the read is not under a branch, a loop or a nested function of the second statement;
 //   - everything that statement evaluates before reaching the read is a literal or a constant
 //     binding (a callee like `eval`, `WScript.Echo`), so it can neither cause nor observe
-//     effects of `expr`.
+//     effects of `expr`;
+//   - or `expr` itself has no side effects (an identifier, literals, concatenations of them): then
+//     whatever runs first only has to be effect-free too, and `expr` may also move past plain copies
+//     `a = <pure>;` that do not write anything it reads (`v5 = exePath; v6 = path2; f(v5 + v6)`).
 // Implicit globals are left alone when the script can reach globals by computed name.
 import { propName, NOT, isPureNode } from '../../values.js';
 import { inStatementList } from '../../ast.js';
-import { isConstVariable } from '../../utils.js';
-import { evalCanSee, globalsReachable } from './cleanup.js';
+import { isConstVariable, identifiersIn } from '../../utils.js';
+import { evalCanSee, globalsReachable, sideEffectFree } from './cleanup.js';
 
 function memberGlobalNames(tree) {
   const names = new Set();
@@ -39,7 +42,7 @@ function stable(n, writtenGlobals) {
 }
 
 /** Is `id` read first (after only stable values) when `stmt` runs, outside branches/loops/functions? */
-function readFirst(id, stmt, writtenGlobals) {
+function readFirst(id, stmt, writtenGlobals, pure = false) {
   let child = id;
   for (let n = id.parent; n; child = n, n = n.parent) {
     if (n === stmt) {
@@ -103,7 +106,8 @@ function readFirst(id, stmt, writtenGlobals) {
       default:
         return false; // functions, loops, sequences, spreads, ...: don't move evaluation there
     }
-    if (!before.every((b) => b.type !== 'SpreadElement' && stable(b, writtenGlobals))) return false;
+    // a value with no side effects cannot disturb what runs before it: those only need to be effect-free too
+    if (!before.every((b) => b.type !== 'SpreadElement' && (pure ? sideEffectFree(b) : stable(b, writtenGlobals)))) return false;
   }
   return false;
 }
@@ -158,11 +162,27 @@ export default {
       // passes work on bindings, and inlining a literal into an expression never reads better
       if (/^(ObjectExpression|ArrayExpression|FunctionExpression|ArrowFunctionExpression|ClassExpression)$/.test(site.value.type)) continue;
       const list = site.stmt.parent[site.stmt.parentKey];
-      const next = list[site.stmt.parentIndex + 1];
+      // (`arguments` is linked to the parameters in sloppy functions: writing one changes it)
+      const pure = sideEffectFree(site.value) && !/Function|Class/.test(site.value.type) &&
+        !identifiersIn(site.value).some((x) => x.name === 'arguments');
+      // a pure value may also move past plain copies `a = <pure>;` that do not write anything it reads
+      const reads = pure ? new Set(identifiersIn(site.value).map((x) => x.name)) : null;
+      let j = site.stmt.parentIndex + 1;
+      while (pure && list[j] && j < site.stmt.parentIndex + 64) {
+        const c = list[j];
+        const isCopy = c.type === 'ExpressionStatement' && c.expression.type === 'AssignmentExpression' && c.expression.operator === '=' &&
+          c.expression.left.type === 'Identifier' && !reads.has(c.expression.left.name) && sideEffectFree(c.expression.right);
+        if (!isCopy) break;
+        let hasRead = false;
+        for (let n = rd.identifier; n; n = n.parent) if (n === c) { hasRead = true; break; }
+        if (hasRead) break;
+        j++;
+      }
+      const next = list[j];
       if (!next) continue;
       let inNext = false;
       for (let n = rd.identifier; n; n = n.parent) if (n === next) { inNext = true; break; }
-      if (!inNext || !readFirst(rd.identifier, next, writtenGlobals)) continue;
+      if (!inNext || !readFirst(rd.identifier, next, writtenGlobals, pure)) continue;
       if (!ctx.canReplaceAll([site.stmt, rd.identifier])) continue;
       ctx.replace(rd.identifier, site.value);
       ctx.remove(site.stmt);

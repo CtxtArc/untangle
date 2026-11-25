@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0
+
+- `inlineConstants`: a binding whose only write is a plain `x = <constant>;` statement (declared by a
+  bare `var`, possibly elsewhere) is inlined into the reads that surely run after that statement.
+  String-builder fallbacks (`str1 = 'pow'; str2 = 'er'; ... v8 = str1 + str2 + ...`) collapse into
+  one literal.
+- `inlineSingleUseTemps`: a side-effect-free value may move past plain copies that do not write
+  anything it reads (`v5 = exePath; v6 = path2; v7 = path1; v8 = ... + v5 + ...`), and only needs
+  side-effect-free (not constant) code before its read. Never with `arguments`, calls, or literals.
+- Top-level constants are no longer inlined when the script writes globals by computed name.
+
 ## 0.10.0
 
 - New `normalizeDeclarations`: `x = v; ...; var x;` (an obfuscator trick that hoists every
