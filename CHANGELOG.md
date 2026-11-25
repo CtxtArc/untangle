@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.0
+
+- New `localizeTemps`: implicit globals used only as one function's scratch variables
+  (`t = g(y); t = (x & t) >> 2; return t;`) become `var` locals, so the usual inlining and
+  dead-code passes apply to them. Only when nothing reaches globals by name, every read follows a
+  plain write in the same call, the function cannot re-enter itself while it runs, and the name is
+  not a host global.
+- Sandbox: `Function.prototype.toString` throws, so no result depends on a function's source.
+  Before, a decoder with a `dec.toString().length` anti-tamper check was folded to its
+  "tampered" value, because the sandbox runs the deobfuscated source.
+- Fix: `inlineSingleUseTemps` inlined writes to host globals (`location = u; return location;`
+  lost the navigation) and to undeclared names in strict code (which throw).
+- Fix: a string of code passed to `setTimeout` / `setInterval` / `setImmediate` / `execScript`
+  counts as reaching globals by name, so the globals it may call are kept
+  (`function boot() {…} setTimeout('boot()', 10)` lost `boot`).
+- `--rename` also treats runs of two or more underscores (`___`, `_______________1`) and long names
+  with a run of 4+ digits (`q45qsdfus8465dfsfgth`) as generated.
+
 ## 0.12.0
 
 - `resolveDecoderCalls`:

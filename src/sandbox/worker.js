@@ -41,6 +41,11 @@ const HARDEN = String.raw`(function (g) {
   Math.random = nondet;
   var D = function () { nondet(); }; D.now = nondet; D.prototype = Date.prototype; g.Date = D;
   if (typeof performance !== 'undefined') g.performance = undefined;
+  // functions here are the deobfuscated ones: their source is not the original, so any result that
+  // depends on it (arguments.callee.toString().length anti-tamper checks) would be wrong
+  Object.defineProperty(Function.prototype, 'toString', { value: function () {
+    throw new Error('function source inspected: it differs from the original after deobfuscation');
+  }, writable: true, configurable: true });
   g.window = g; g.self = g;
   // the only COM object available: Scripting.Dictionary, a pure in-memory map (no host access)
   function Dict() {

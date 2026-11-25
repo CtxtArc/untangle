@@ -120,11 +120,11 @@ export function evalCanSee(scope) {
   return scope.type !== 'global' && scope.dynamic;
 }
 
-/** Can a script reach global-object properties by computed name or through an alias of the global? */
+/** Can a script reach global-object properties by computed name, through an alias of the global, or from setTimeout('…') code? */
 export function globalsReachable(tree) {
   if (tree.sourceType !== 'script') return true;
   if (tree.scopeManager.scopes.some((s) => s.type === 'with')) return true;
-  return globalObjectEscapes(tree);
+  return stringCodeSink(tree) || globalObjectEscapes(tree);
 }
 
 const GLOBAL_ALIASES = new Set(['window', 'self', 'globalThis', 'top', 'parent', 'frames']);
@@ -189,14 +189,35 @@ function globalObjectEscapes(tree) {
   return roots.some((n) => escapes(n, 0));
 }
 
-/** Can a script reach global-object properties by computed name or through an alias of the global? */
-function globalsEscape(tree) {
+const STRING_CODE_SINKS = new Set(['setTimeout', 'setInterval', 'setImmediate', 'execScript']);
+
+/** setTimeout('f()', 10): a string of code that runs in the global scope and can name any global. */
+function stringCodeSink(tree) {
+  for (const call of tree.ofType('CallExpression')) {
+    const c = call.callee;
+    const named = (c.type === 'Identifier' && STRING_CODE_SINKS.has(c.name) && !c.variable) ||
+      (c.type === 'MemberExpression' && !c.computed && STRING_CODE_SINKS.has(c.property.name) &&
+        c.object.type === 'Identifier' && GLOBAL_ALIASES.has(c.object.name) && !c.object.variable);
+    if (!named) continue;
+    const a = call.arguments[0];
+    if (!a || /^(Arrow)?FunctionExpression$/.test(a.type)) continue;
+    if (a.type === 'Identifier' && a.variable && a.variable.defs.length === 1 && a.variable.defs[0].type === 'FunctionName') continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Can a script reach global-object properties by computed name, through an alias of the global,
+ * or from code that is only a string here (eval, setTimeout('...'))?
+ */
+export function globalsEscape(tree) {
   if (tree.sourceType !== 'script') return true;
   for (const s of tree.scopeManager.scopes) {
     if (s.type === 'with') return true;
     if (s.references.some((r) => r.identifier.name === 'eval' && !r.resolved)) return true;
   }
-  return globalObjectEscapes(tree);
+  return stringCodeSink(tree) || globalObjectEscapes(tree);
 }
 
 /** A value that is a brand-new object/array (or a primitive), so writes to its properties can't leak. */

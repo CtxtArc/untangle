@@ -25,6 +25,7 @@ import unflattenControlFlow from './modules/safe/unflattenControlFlow.js';
 import unwrapEval from './modules/safe/unwrapEval.js';
 import splitSequences from './modules/safe/splitSequences.js';
 import normalizeDeclarations from './modules/safe/normalizeDeclarations.js';
+import localizeTemps from './modules/safe/localizeTemps.js';
 import splitJoinConcat from './modules/safe/splitJoinConcat.js';
 import foldBuiltinCalls from './modules/safe/foldBuiltinCalls.js';
 import mergeAccumulators from './modules/safe/mergeAccumulators.js';
@@ -42,6 +43,7 @@ export const SAFE_MODULES = [
   normalizeComputed,
   simplifyBranches,
   splitSequences,
+  localizeTemps,
   normalizeDeclarations,
   mergeAccumulators,
   splitRedeclarations,

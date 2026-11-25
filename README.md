@@ -115,6 +115,7 @@ only report what they would have evaluated.
 | `normalizeComputed` | `a['b']` → `a.b`, `{'k': 1}` → `{k: 1}` (keeps `__proto__` / `constructor` semantics) |
 | `simplifyBranches` | static `if` / `?:` / `&&` / `\|\|` / `??` / `while(false)`, keeping hoisted `var`s; empty branches: `if (c) {} else S` → `if (!c) S` |
 | `splitSequences` | `a(), b()` → `a(); b();`, `return a(), b` → `a(); return b`, `var a, b` → two decls |
+| `localizeTemps` | implicit globals that are only a function's scratch variables (`function f(x, y) { t = g(y); return x & t; }`) become `var` locals: every reference is in that function, every read follows a plain `t = …;` in the same call, the function cannot be re-entered while it runs, the name is no host global (`location`, `name`, `onload`, …) and nothing reaches globals by name |
 | `normalizeDeclarations` | `x = v; …; var x;` (declarations hoisted to the end of the function, `const` turned into assignments) → `var x = v;` at the assignment, when it sits at the top level of the function body |
 | `mergeAccumulators` | `var s = ''; s += 'ab'; s += 'cd'` → `var s = 'abcd'` for runs of literal appends with no read in between (linear even for 10k+ appends) |
 | `splitRedeclarations` | `var s = 'a'; use(s); var s = 'b'; use(s)`, `s = s.split('#').join('')` and `s += x` → `s` / `s_1` / `s_2`, when the definitions are straight-line (bindings with over 1000 definitions are left alone) |
@@ -169,6 +170,9 @@ sandbox, then every call is evaluated **twice**. A result is accepted only if:
 - it is a string, number or boolean, or an array of them (at most 200 000 items), which the
   next decoder in a chain can take as a constant argument,
 - both evaluations return the same value (`Math.random` and `Date` throw in the sandbox),
+- the call never looks at a function's source (`Function.prototype.toString` throws in the sandbox:
+  the functions there are the deobfuscated ones, so `arguments.callee.toString().length != 1731`
+  anti-tamper checks would see the wrong text),
 - neither evaluation changes global state, apart from a global function being replaced by
   another function (self-redefining decoders).
 
@@ -247,7 +251,9 @@ var stream = new ActiveXObject('ADODB.Stream');
 | a function / parameter / array / object / anything else | `fn1`, `arg1`, `arr`, `obj`, `v1`, … |
 
 `--rename` only touches names that look machine-generated (`_0x…` hex, a prefix followed by 3+
-digits like `AYTRJHTPTRRUBMPC38299`, long all-caps runs, `IlI1lI`-style). Random short names such
+digits like `AYTRJHTPTRRUBMPC38299`, long all-caps runs, `IlI1lI`-style, runs of two or more
+underscores like `___` or `_______________1`, and names of 12+ characters holding a run of 4+ digits
+like `q45qsdfus8465dfsfgth`; a lone `_` is left alone). Random short names such
 as `LkFWdl` cannot be told apart from human ones reliably: use `--rename-all` to rename every
 eligible binding.
 
@@ -275,7 +281,13 @@ Constants are only inlined into reads that surely run after the declaration: not
 conditional block that holds the declaration, and not into a hoisted function that code before
 the declaration can call (directly, through other functions, aliases or callbacks). Scripts that
 reach globals by computed name (`this[k]`, `window[k]`, `with`) keep every top-level binding, and
-no top-level constant is inlined there either (`this[k] = …` could overwrite it). The global object
+no top-level constant is inlined there either (`this[k] = …` could overwrite it). A string of code
+passed to `setTimeout` / `setInterval` / `setImmediate` / `execScript` counts too: it runs in the
+global scope and may name any global.
+
+Host globals (`location`, `name`, `status`, `onload`, `WScript`, …) are never treated as scratch
+variables: `location = url` navigates even when nothing reads `location` again. In strict code a
+write to an undeclared name throws, so such writes are never removed or moved either. The global object
 is followed through the usual wrappers: in `(function () { var root = this; ... }).call(this)` only
 a computed access or escape of the inner `this` / `root` counts (an arrow's `this` is the outer one).
 
@@ -296,6 +308,14 @@ with `--dyn` on live samples only inside a disposable analysis VM.
 ## Known limits / next steps
 
 - Proxy objects built by later assignment (`o = {}; o.k = ...`) are not resolved yet, only literals.
+- Anti-tamper checks on a function's own source (`arguments.callee.toString().length != 1731`) are
+  never evaluated, but they are not removed either: in the output those functions have a different
+  source, so running the output takes the "tampered" branch. Read such checks as dead guards.
+- Scripts that look globals up by name (`for (k in this)`, `this[k](...)`) keep every global as is:
+  implicit-global temps stay global there and helpers that write them are not resolved
+  (`--no-side-effect-check` overrides the latter once you have read them).
+- `localizeTemps` needs a plain write before each read; a value written only in some branches
+  (`switch` without `default`) stays global.
 - Constant arrays passed to other functions are not folded (`var a = ['Sleep', ...]; WScript[a[0]](…); helper(a)`):
   that needs proving the callee only reads them.
 - obfuscator.io `selfDefending` / `debugProtection` code can hang the prelude: it times out and

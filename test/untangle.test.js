@@ -595,3 +595,43 @@ test('Function(code).call(x) is unwrapped; the global object is followed through
   assert.match(deob(dec + ' this[k](); log(dec("ihj", 1));'), /function dec/);
   assert.equal(deob(dec + ' log(dec("ihj", 1));'), norm("log('hik');"));
 });
+
+test('function source is never inspected in the sandbox (anti-tamper length checks)', () => {
+  // the sandbox runs the deobfuscated source: a result that depends on it would be wrong
+  const src = 'function dec(s) { var r = ""; for (var i = 0; i < s.length; i++) r += String.fromCharCode(s.charCodeAt(i) ^ 1);' +
+    ' if (dec.toString().length != 120) r = "tampered"; return r; } WScript.Echo(dec("ihj"));';
+  assert.match(deob(src), /dec\('ihj'\)/);
+  assert.match(deob(src.replace('dec.toString().length', '(dec + "").length')), /dec\('ihj'\)/);
+});
+
+test('implicit-global scratch variables become locals only when nothing can observe them', () => {
+  const st = (c) => deobfuscate(c).code;
+  assert.equal(st('function f(x, y) { t = g(y); t = (x & t) >> 2; return t; } function g(y) { return Math.pow(2, y); } h(f);'),
+    norm('function f(x, y) { return (x & Math.pow(2, y)) >> 2; } h(f);'));
+  // loop temps and accumulators; a write-only temp disappears
+  assert.equal(st('function f(s) { out = ""; junk = 1; for (var i = 0; i < s.length; i++) { c = s.charCodeAt(i); out += String.fromCharCode(c ^ 1); } return out; } h(f);'),
+    norm("function f(s) { var out = ''; for (var i = 0; i < s.length; i++) { out += String.fromCharCode(s.charCodeAt(i) ^ 1); } return out; } h(f);"));
+  const kept = (c, re) => assert.match(st(c), re);
+  kept('function f(c) { if (c) { t = 1; } return t; } h(f);', /return t;/);                       // may read an older value
+  kept('function f(n) { t = n; if (n) f(n - 1); return t; } h(f);', /^function f\(n\) \{\s*t = n;/);  // recursion clobbers the global
+  kept('function f(n) { t = n; g(); return t; } h(f);', /^function f\(n\) \{\s*t = n;/);             // unknown call may re-enter
+  kept('function f(n) { t = n; return t; } function k() { return t; } h(f, k);', /^function f\(n\) \{\s*t = n;/); // read elsewhere
+  kept('function f(n) { t = n; return function () { return t; }; } h(f);', /t = n/);                // read by a closure
+  kept('function f(n) { name = n; return name; } h(f);', /name = n/);                              // a host global
+  kept('function f(u) { location = u; return location; } h(f);', /location = u/);                 // a setter: it navigates
+  kept('function f(n) { "use strict"; t = n; return t; } h(f);', /t = n/);                         // strict: the write throws
+  kept('function f(n) { t = n; return t; } h(f); this[k] = 1;', /t = n/);                          // globals reachable by name
+  kept('function f(n) { t = n; return t; } h(f); setTimeout(code, 1);', /t = n/);                  // string code runs globally
+});
+
+test('setTimeout with a string keeps the globals it may name', () => {
+  const st = (c) => deobfuscate(c).code;
+  assert.match(st('function boot() { run(); } setTimeout("boot()", 10);'), /function boot/);
+  assert.equal(st('function boot() { run(); } setTimeout(function () { log(1); }, 10);'), norm('setTimeout(function () { log(1); }, 10);'));
+});
+
+test('rename treats underscore runs and long digit runs as generated names', async () => {
+  const { looksGenerated } = await import('../src/rename.js');
+  for (const n of ['___', '_______________1', 'q45qsdfus8465dfsfgth', 'fgspg87857878561']) assert.ok(looksGenerated(n), n);
+  for (const n of ['_', 'sha256Digest', 'utf8Decode', 'x1', '__proto']) assert.ok(!looksGenerated(n), n);
+});

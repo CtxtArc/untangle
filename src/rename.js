@@ -33,6 +33,8 @@ export function looksGenerated(name) {
   if (/^[A-Za-z_$][A-Za-z_$]*\d{3,}$/.test(name) && name.length >= 8) return true; // PREFIX38299
   if (/^[A-Z]{12,}\d*$/.test(name)) return true;                                    // AYTRJHTPTRRUBMPC
   if (/^[Il1O0_]{6,}$/.test(name)) return true;                                     // IlI1lIl
+  if (/^__+\d*$/.test(name)) return true;                                             // ___, _______________1
+  if (/[A-Za-z]/.test(name) && /\d{4,}/.test(name) && name.length >= 12) return true; // q45qsdfus8465dfsfgth
   return false;
 }
 

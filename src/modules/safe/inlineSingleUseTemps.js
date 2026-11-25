@@ -12,11 +12,13 @@
 //   - or `expr` itself has no side effects (an identifier, literals, concatenations of them): then
 //     whatever runs first only has to be effect-free too, and `expr` may also move past plain copies
 //     `a = <pure>;` that do not write anything it reads (`v5 = exePath; v6 = path2; f(v5 + v6)`).
-// Implicit globals are left alone when the script can reach globals by computed name.
+// Implicit globals are left alone when the script can reach globals by computed name, and host
+// globals (`location`, `name`, `onload`, …) always are: writing them does something.
 import { propName, NOT, isPureNode } from '../../values.js';
 import { inStatementList } from '../../ast.js';
 import { isConstVariable, identifiersIn } from '../../utils.js';
 import { evalCanSee, globalsReachable, sideEffectFree } from './cleanup.js';
+import { isHostGlobal } from '../../hostGlobals.js';
 
 function memberGlobalNames(tree) {
   const names = new Set();
@@ -148,7 +150,7 @@ export default {
         byName.get(r.identifier.name).push(r);
       }
       const viaMember = memberGlobalNames(tree);
-      for (const [name, refs] of byName) if (!viaMember.has(name)) sites.push([refs, null]);
+      for (const [name, refs] of byName) if (!viaMember.has(name) && !isHostGlobal(name)) sites.push([refs, null]); // location = u navigates
     }
 
     for (const [refs, v] of sites) {
@@ -156,6 +158,7 @@ export default {
       const w = refs.find((r) => r.isWrite() && !r.isRead());
       const rd = refs.find((r) => r.isRead() && !r.isWrite());
       if (!w || !rd) continue;
+      if (!v && w.from.isStrict) continue; // strict code: writing an undeclared name throws
       const site = writeSite(w, v);
       if (!site || !inStatementList(site.stmt)) continue;
       // object / array / function literals stay bound: proxy-object, constant-array and proxy-function

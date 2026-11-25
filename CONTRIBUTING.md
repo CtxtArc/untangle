@@ -26,6 +26,7 @@ src/modules/unsafe/   sandboxed transforms
 src/sandbox/          child-process runner + vm worker (emulates JScript Scripting.Dictionary only)
 src/blobs.js          --extract-blobs (payload files, type and language labels)
 src/rename.js         --rename (usage-based names; runs once after the fixpoint)
+src/hostGlobals.js    names that mean something on a browser / Node / WSH global object
 src/jscript.js        JScript-only syntax: `call(...) = v` <-> `call(...).__untangle_callset__ = v`
 ```
 
@@ -56,6 +57,8 @@ export default {
   moving code to a new place.
 - A transform that removes, renames, merges or moves a binding must skip scopes where a direct
   `eval` could read it by name: use `evalCanSee(scope)` from `src/modules/safe/cleanup.js`.
+- A transform on implicit globals must check `globalsEscape(tree)` / `globalsReachable(tree)` and skip
+  host globals (`isHostGlobal(name)` from `src/hostGlobals.js`: `location = u` has an effect).
 - Register the module in `src/index.js`. Order matters: cheap, enabling transforms first.
 - Document it: a row in the README module table (and the CLI options table / a section for any
   new flag), plus a CHANGELOG entry.
