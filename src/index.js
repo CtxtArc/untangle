@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { Tree } from './ast.js';
 import { Context } from './context.js';
 import { renameBindings } from './rename.js';
+import { toStandard, fromStandard } from './jscript.js';
 
 import normalizeComputed from './modules/safe/normalizeComputed.js';
 import foldConstants from './modules/safe/foldConstants.js';
@@ -88,8 +89,10 @@ export function deobfuscate(code, userOptions = {}) {
   const disabled = new Set(options.disable);
   if (!options.removeDeadCode) disabled.add('removeDeadCode');
 
-  const tree = new Tree(code);
-  const original = tree.code;
+  const jscript = toStandard(code); // JScript-only syntax (`obj.Item(k) = v`) made parseable, undone on output
+  if (jscript.count) log(`jscript: ${jscript.count} call assignment(s)`);
+  const tree = new Tree(jscript.code);
+  const original = fromStandard(tree.code);
   tree.commit(); // normalise formatting once so "changed" means a real transformation
   const stats = {};
   const broken = new Set();
@@ -173,7 +176,8 @@ export function deobfuscate(code, userOptions = {}) {
     }
   }
 
-  return { code: tree.code, original, changed: hash(tree.code) !== hash(original), iterations, stats, pending, problems, renamed, dynamic: options.dynamic };
+  const out = fromStandard(tree.code);
+  return { code: out, original, changed: hash(out) !== hash(original), iterations, stats, pending, problems, renamed, dynamic: options.dynamic };
 }
 
 export { Tree };

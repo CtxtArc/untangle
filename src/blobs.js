@@ -1,5 +1,6 @@
 // Pull long string literals (embedded payloads) out of the deobfuscated code into files,
 // decode base64 ones and identify what they are. Nothing extracted is ever executed.
+import { toStandard, fromStandard } from './jscript.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -72,7 +73,7 @@ const human = (n) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1
  * @returns {{ code: string, blobs: object[] }}
  */
 export function extractBlobs(code, dir, { minLength = 2048 } = {}) {
-  const tree = new Tree(code);
+  const tree = new Tree(toStandard(code).code);
   fs.mkdirSync(dir, { recursive: true });
   const blobs = [];
   walk(tree.ast, (n) => {
@@ -100,7 +101,7 @@ export function extractBlobs(code, dir, { minLength = 2048 } = {}) {
       `sha256 ${entry.sha256}, saved as ${entry.file}]`;
     delete n.raw;
   });
-  if (!blobs.length) return { code: tree.generate(), blobs }; // nothing extracted: leave the directory alone
+  if (!blobs.length) return { code: fromStandard(tree.generate()), blobs }; // nothing extracted: leave the directory alone
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(blobs, null, 2) + '\n');
-  return { code: tree.generate(), blobs };
+  return { code: fromStandard(tree.generate()), blobs };
 }

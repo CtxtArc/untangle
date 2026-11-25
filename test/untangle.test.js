@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { toStandard, fromStandard } from '../src/jscript.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -7,7 +8,7 @@ import { deobfuscate } from '../src/index.js';
 import { generate } from '../src/codegen.js';
 import { parse } from '../src/ast.js';
 
-const norm = (code) => generate(parse(code).ast);
+const norm = (code) => fromStandard(generate(parse(toStandard(code).code).ast)); // JScript-aware
 // most tests exercise the full pipeline; static-only behaviour is tested explicitly below
 const deob = (code, opts) => deobfuscate(code, { dynamic: true, ...opts }).code;
 const same = (input, expected, opts) => assert.equal(deob(input, opts), norm(expected));
@@ -535,4 +536,22 @@ test('constants assigned once by a plain statement; pure temps past plain copies
   assert.match(st('function f(e) { t = e; e = 2; run(t); var t; } use(f);'), /t = e/);
   assert.match(st('function f(e) { t = e(); u = g(); run(u, t); var t, u; } use(f);'), /var t = e\(\);\s*run\(g\(\), t\)/); // e() must still run before g()
   assert.match(st('function f(p) { t = arguments[0]; p = 5; run(t); var t; } use(f);'), /t = arguments\[0\]/);
+});
+
+test('JScript call assignments (dict.Item(k) = v) parse and come back unchanged', async () => {
+  const st = (c) => deobfuscate(c).code;
+  assert.equal(st('var d = new ActiveXObject("Scripting.Dictionary"); d.Item("s") = 1; d.Item("s") += 2; log(d.Item("s"));'),
+    norm("var d = new ActiveXObject('Scripting.Dictionary'); d.Item('s') = 1; d.Item('s') += 2; log(d.Item('s'));"));
+  assert.equal(st('sh.Environment("User")("X") = "y";'), norm("sh.Environment('User')('X') = 'y';"));
+  assert.equal(st('f(a)(b) = c ? 1 : 2;'), norm('f(a)(b) = c ? 1 : 2;'));
+  assert.equal(st('if (a) b = 1;'), norm('if (a) b = 1;'));            // not a call
+  // the marker never leaks, and extracting blobs from such code works too
+  const { extractBlobs } = await import('../src/blobs.js');
+  const dir = fs.mkdtempSync(`${process.env.TMPDIR || '/tmp'}/untangle-js-`);
+  try {
+    const r = extractBlobs(`d.Item("k") = "${'A'.repeat(3000)}";`, dir);
+    assert.equal(r.blobs.length, 1);
+    assert.match(r.code, /^d\.Item\('k'\) = '\[untangle blob 1/);
+    assert.doesNotMatch(r.code, /__untangle/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

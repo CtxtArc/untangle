@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.1
+
+- JScript call assignments (`dict.Item("k") = v`, `rs.Fields(0).Value = v`, `env("X") += v`) no
+  longer stop untangle with "Assigning to rvalue": they are rewritten to an opaque marker-property
+  write for parsing and printed back exactly as written. Blob extraction handles them too.
+
 ## 0.11.0
 
 - `inlineConstants`: a binding whose only write is a plain `x = <constant>;` statement (declared by a

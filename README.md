@@ -97,7 +97,9 @@ Options: `dynamic` (default `false`), `rename` (`false`, `'auto'` or `'all'`), `
 | `--list-modules`, `--version`, `-h, --help` | |
 
 Input may be UTF-8, UTF-8 with BOM, UTF-16 LE/BE (as WSH scripts often are) or ANSI; the
-detected encoding is printed when it is not plain UTF-8. If a module crashes, it is disabled for
+detected encoding is printed when it is not plain UTF-8. JScript-only syntax is accepted:
+assignments to a call (`dict.Item("k") = v`, `sh.Environment("User")("X") = v`), which WSH allows
+for parameterised COM properties, are parsed and written back exactly as they were. If a module crashes, it is disabled for
 the rest of the run and untangle prints `warning: <module> crashed and was disabled ...`: the
 output is then valid but may be less complete. Please report those (with a SHA-256, not the sample).
 
