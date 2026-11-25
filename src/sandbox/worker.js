@@ -42,8 +42,33 @@ const HARDEN = String.raw`(function (g) {
   var D = function () { nondet(); }; D.now = nondet; D.prototype = Date.prototype; g.Date = D;
   if (typeof performance !== 'undefined') g.performance = undefined;
   g.window = g; g.self = g;
+  // the only COM object available: Scripting.Dictionary, a pure in-memory map (no host access)
+  function Dict() {
+    var m = Object.create(null), n = 0, self = this;
+    function key(k) { return '$' + String(k); }
+    this.Item = function (k) { if (!(key(k) in m)) { m[key(k)] = undefined; n++; } return m[key(k)]; };
+    this.__set_Item = function (k, v) { if (!(key(k) in m)) n++; m[key(k)] = v; };
+    this.Exists = function (k) { return key(k) in m; };
+    this.Add = function (k, v) { if (key(k) in m) throw new Error('This key is already associated with an element of this collection'); m[key(k)] = v; n++; };
+    this.Remove = function (k) { if (key(k) in m) { delete m[key(k)]; n--; } };
+    this.RemoveAll = function () { m = Object.create(null); n = 0; };
+    this.Keys = function () { return Object.keys(m).map(function (x) { return x.slice(1); }); };
+    this.Items = function () { return Object.keys(m).map(function (x) { return m[x]; }); };
+    Object.defineProperty(self, 'Count', { get: function () { return n; } });
+  }
+  g.ActiveXObject = function (id) {
+    if (String(id).toLowerCase() === 'scripting.dictionary') return new Dict();
+    throw new Error('ActiveXObject not available in sandbox: ' + id);
+  };
+  // JScript obj.m(args) = v, lowered by the host to __untangle_callset(obj, 'm', [args], v)
+  g.__untangle_callset = function (o, m, args, v) {
+    var f = o && o['__set_' + m];
+    if (typeof f !== 'function') throw new Error('cannot assign to ' + m + '(...) in sandbox');
+    f.apply(o, args.concat([v]));
+    return v;
+  };
 
-  var MAXS = 64 * 1024 * 1024, MAXA = 1000;
+  var MAXS = 64 * 1024 * 1024, MAXA = 200000;
   function enc(v, d) {
     switch (typeof v) {
       case 'string': if (v.length > MAXS) throw new Error('string too long'); return { t: 's', v: v };

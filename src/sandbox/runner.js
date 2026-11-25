@@ -57,6 +57,7 @@ export function fromSandbox(v) {
     case 'null': return null;
     case 'big': return BigInt(v.v);
     case 'n': return typeof v.v === 'string' ? Number(v.v) : v.v;
+    case 'a': return v.v.map(fromSandbox);
     default: return v.v;
   }
 }

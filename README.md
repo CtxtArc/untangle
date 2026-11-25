@@ -126,7 +126,7 @@ only report what they would have evaluated.
 | `resolveProxyObjects` | obfuscator.io proxy objects: `o.aBc(x, y)` → `x + y`, `o.k` → `'log'` |
 | `inlineProxyFunctions` | single-`return` wrappers: `w('k', 0x20)` → `dec(0x20 - 0x1a, 'k')`; single-statement wrappers called as statements: `run(x);` → `eval(dec(x));` (with `eval` only if the wrapper has no locals) |
 | `unflattenControlFlow` | `'2\|0\|1'.split('\|')` + `while(true) switch(o[i++])` dispatchers → straight-line code |
-| `unwrapEval` | `eval('code')` → code, `Function('code')()` → IIFE (only when no local would be captured) |
+| `unwrapEval` | `eval('code')` → code, `Function('code')()` → IIFE, `new Function('code').call(x)` → `(function () { code }).call(x)` (only when no local would be captured) |
 | `foldBuiltinCalls` | static: `'dlrow'.split('').reverse().join('')`, `blob.split('♉').join('')`, `String.fromCharCode(…)`, `atob`, `parseInt`, … on literal data, via a whitelist interpreter (no callbacks, size caps; regexes only when they are a plain literal string, like `/'/g`) |
 | `splitJoinConcat` ⚠ | `(folder + '\\♉♉ev♉♉il.exe').split('♉♉').join('')` → `folder + '\\evil.exe'` |
 | `removeUnreachable` | statements after `return` / `throw` / `break` / `continue` / `WScript.Quit()` |
@@ -135,7 +135,7 @@ only report what they would have evaluated.
 | `resolveBuiltinCalls` 🔒 | what `foldBuiltinCalls` refuses (e.g. regex arguments), in the sandbox; follows constant variables, so a 12-step `a.split('?').join('')` chain resolves in one evaluation |
 | `resolveConstantLoops` 🔒 | `var out = ''; for (…) out += String.fromCharCode(parseInt(blob.substr(i, 2), 16) ^ key.charCodeAt(…))` → `var out = '<decoded>'` |
 | `resolveEvalArguments` 🔒 | `eval(function(p,a,c,k,e,d){...}(...))` (Dean Edwards packer), `eval(atob(...))` |
-| `resolveDecoderCalls` 🔒 | string-array decoders and other pure helpers: evaluates calls with constant arguments (literals, literal arrays/objects, constant string bindings, nested calls such as `cipher(unpack('…'), unpack('…'))`, and `f(…).length`) together with their context; afterwards removes decoder machinery (string arrays, decoders, rotators) that nothing else uses and that touches nothing but itself |
+| `resolveDecoderCalls` 🔒 | string-array decoders and other pure helpers: evaluates calls with constant arguments (literals, literal arrays/objects, constant string bindings, literal arrays bound to a name read only there, pure string-method chains such as `'ab'.concat(x).toUpperCase()`, nested calls such as `cipher(unpack('…'), unpack('…'))`, and `f(…).length`) together with their context; JScript `Scripting.Dictionary` is emulated; results may be primitives or arrays of primitives; afterwards removes decoder machinery (string arrays, decoders, rotators) that nothing else uses and that touches nothing but itself |
 
 🔒 = evaluates code from the sample inside the sandbox; only with `--dyn`. ⚠ = heuristic: exact only if the runtime
 part of the concatenation never contains a separator character; it only fires for separators
@@ -166,14 +166,18 @@ For each function called with constant arguments, `resolveDecoderCalls` collects
 argument (the string-array rotators). The context runs once as a prelude in a fresh
 sandbox, then every call is evaluated **twice**. A result is accepted only if:
 
-- it is a string, number or boolean,
+- it is a string, number or boolean, or an array of them (at most 200 000 items), which the
+  next decoder in a chain can take as a constant argument,
 - both evaluations return the same value (`Math.random` and `Date` throw in the sandbox),
 - neither evaluation changes global state, apart from a global function being replaced by
   another function (self-redefining decoders).
 
 Constant arguments are primitives, fresh array / object literals of constants (the sandbox gets
 its own copy, so whatever the call does to them is invisible to the program), bindings that are
-never reassigned and hold a primitive (`var buf = '<29 KB>'`, substituted by value), and nested
+never reassigned and hold a primitive (`var buf = '<29 KB>'`, substituted by value), bindings that
+hold an array / object literal and are read nowhere else (`var data = [104, ...]; dec(data, 7)`),
+pure string methods (`concat`, `slice`, `split`, `join`, `replace`, `charAt`, `toUpperCase`, …) on
+constant receivers, and nested
 calls to other functions with constant arguments, whose contexts join the prelude. Only the
 outermost such call is evaluated, so a three-stage chain like
 
@@ -183,11 +187,23 @@ var api = [slice(buf, 21081, [63, 56, 4, 21, 80]), ...];                     // 
 if (count(keep(['cfg', 'node', 'lane'])) > 0) ...                            // -> if (11 > 0)
 ```
 
-resolves in two rounds. A binding that holds an array is never treated as constant (the call
-could mutate it), and results must still be strings, numbers or booleans.
+resolves in two rounds. A binding that holds an array and is also read elsewhere is never treated
+as constant (the call could mutate it).
+
+JScript decoders often keep their state in a `Scripting.Dictionary`
+(`var d = new ActiveXObject('Scripting.Dictionary'); d.Item('s') = st; ...`). The sandbox emulates
+that one object (`Item`, `Add`, `Exists`, `Remove`, `RemoveAll`, `Keys`, `Items`, `Count`, and the
+`d.Item(k) = v` call assignment); every other `ActiveXObject` throws, so a helper that touches the
+file system or the shell is never evaluated.
 
 When every call to a decoder is resolved and nothing else uses its context, the decoder,
-its string array and its rotator are removed.
+its string array and its rotator are removed, except for top-level decoders in a script that
+reaches globals by computed name (`this[k]()` could still call them).
+
+Once a layer such as `new Function(rev5(rev6(rev7(decodeHex('…'))))).call(root)` folds into
+`new Function('<code>').call(root)`, `unwrapEval` turns it into
+`(function () { <code> }).call(root)` when none of the code's free names would be captured by an
+enclosing local, so the next stage is deobfuscated in place.
 
 ## Readable names (`--rename`)
 
@@ -259,7 +275,9 @@ Constants are only inlined into reads that surely run after the declaration: not
 conditional block that holds the declaration, and not into a hoisted function that code before
 the declaration can call (directly, through other functions, aliases or callbacks). Scripts that
 reach globals by computed name (`this[k]`, `window[k]`, `with`) keep every top-level binding, and
-no top-level constant is inlined there either (`this[k] = …` could overwrite it).
+no top-level constant is inlined there either (`this[k] = …` could overwrite it). The global object
+is followed through the usual wrappers: in `(function () { var root = this; ... }).call(this)` only
+a computed access or escape of the inner `this` / `root` counts (an arrow's `this` is the outer one).
 
 **Static by default:** without `--dyn` nothing from the input is executed; untangle only parses,
 rewrites and folds literal data with a whitelist interpreter.

@@ -23,7 +23,7 @@ src/builtins.js       which builtin calls are side-effect free; constant materia
 src/utils.js          scope helpers, proxy-call inliner
 src/modules/safe/     static transforms
 src/modules/unsafe/   sandboxed transforms
-src/sandbox/          child-process runner + vm worker
+src/sandbox/          child-process runner + vm worker (emulates JScript Scripting.Dictionary only)
 src/blobs.js          --extract-blobs (payload files, type and language labels)
 src/rename.js         --rename (usage-based names; runs once after the fixpoint)
 src/jscript.js        JScript-only syntax: `call(...) = v` <-> `call(...).__untangle_callset__ = v`

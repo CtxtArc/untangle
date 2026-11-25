@@ -555,3 +555,43 @@ test('JScript call assignments (dict.Item(k) = v) parse and come back unchanged'
     assert.doesNotMatch(r.code, /__untangle/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('decoders using Scripting.Dictionary, arrays passed by name, method chains and array results', () => {
+  // JScript Dictionary (with dict.Item(k) = v) is emulated in the sandbox; nothing else is
+  assert.equal(deob('function mix(s) { var dict = new ActiveXObject("Scripting.Dictionary"); dict.Item("k") = 3; var r = "";' +
+    ' for (var i = 0; i < s.length; i++) { r += String.fromCharCode(s.charCodeAt(i) - dict.Item("k")); dict.Item("k") = dict.Item("k"); } return r; }' +
+    ' WScript.Echo(mix("Khoor"));'), norm("WScript.Echo('Hello');"));
+  assert.match(deob('function bad(s) { var f = new ActiveXObject("Scripting.FileSystemObject"); return s + f.GetTempName(); } WScript.Echo(bad("x"));'),
+    /bad\('x'\)/);
+  // a literal array bound to a name that is read only here is a constant argument ...
+  const dec = 'function dec(a, k) { var r = ""; for (var i = 0; i < a.length; i++) r += String.fromCharCode(a[i] ^ k); return r; }';
+  assert.equal(deob(dec + ' function run() { var data = [105, 104, 106]; WScript.Echo(dec(data, 1)); } run();'), norm("WScript.Echo('hik');"));
+  // ... but not when the array is also used elsewhere
+  assert.match(deob(dec + ' function run() { var data = [105, 104, 106]; WScript.Echo(dec(data, 1), data); } run();'), /dec\(data, 1\)/);
+  // pure string methods on constant receivers
+  assert.equal(deob('function rev(s) { return s.split("").reverse().join(""); } function run() { WScript.Echo(rev("abc".concat("def").toUpperCase())); } run();'),
+    norm("WScript.Echo('FEDCBA');"));
+  // a decoder may return an array of primitives that the next one consumes
+  assert.equal(deob('function bytes(s) { var o = []; for (var i = 0; i < s.length; i++) o.push(s.charCodeAt(i) + 1); return o; }' +
+    ' function txt(b) { var r = ""; for (var i = 0; i < b.length; i++) r += String.fromCharCode(b[i]); return r; }' +
+    ' function run() { var b = bytes("gdkkn"); WScript.Echo(txt(b)); } run();'), norm("WScript.Echo('hello');"));
+});
+
+test('Function(code).call(x) is unwrapped; the global object is followed through .call(this) wrappers', () => {
+  const st = (c) => deobfuscate(c).code;
+  assert.equal(st('(function () { var root = this; new Function("WScript.Echo(1); var q = 2; WScript.Echo(q);").call(root); }).call(this);'),
+    norm('(function () { (function () { WScript.Echo(1); WScript.Echo(2); }).call(this); }).call(this);'));
+  // never when a local would capture a name the code means globally
+  assert.match(st('(function () { var WScript = g(); use(WScript, WScript); Function("WScript.Echo(1)").call(this); }).call(this);'),
+    /Function\('WScript\.Echo\(1\)'\)/);
+  // .call(this) with only static reads of the inner this: unused globals can go
+  assert.equal(st('(function () { var g = this; g.log(1); }).call(this); function unused() { return 1; }'),
+    norm('(function () { this.log(1); }).call(this);'));
+  // ... but a computed access through it (or an arrow's this) keeps them
+  assert.match(st('(function () { var g = this; g[k](); }).call(this); function unused() { return 1; }'), /function unused/);
+  assert.match(st('var f = () => this[k](); f(); function unused() { return 1; }'), /function unused/);
+  // the decoder sweep honours the same rule
+  const dec = 'function dec(a, k) { var r = ""; for (var i = 0; i < a.length; i++) r += String.fromCharCode(a.charCodeAt(i) ^ k); return r; }';
+  assert.match(deob(dec + ' this[k](); log(dec("ihj", 1));'), /function dec/);
+  assert.equal(deob(dec + ' log(dec("ihj", 1));'), norm("log('hik');"));
+});

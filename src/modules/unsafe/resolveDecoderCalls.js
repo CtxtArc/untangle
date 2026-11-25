@@ -22,6 +22,8 @@ import { staticValue, NOT, isPrimitive, valueToNode } from '../../values.js';
 import { isInside, isConstVariable, readBeforeDeclaration } from '../../utils.js';
 import { runJobs, fromSandbox } from '../../sandbox/runner.js';
 import { generate } from '../../codegen.js';
+import { CALLSET } from '../../jscript.js';
+import { globalsReachable } from '../safe/cleanup.js';
 
 function declStatementOf(v) {
   if (!v || v.defs.length !== 1) return null;
@@ -116,9 +118,26 @@ function collectContext(rootStmt) {
   return { stmts: [...stmts].sort((a, b) => a.range[0] - b.range[0]), vars };
 }
 
+/** JScript `o.m(args) = v` (marker form) -> `__untangle_callset(o, 'm', [args], v)` for the sandbox. */
+function lowerCallsets(node) {
+  walk(node, (n) => {
+    if (n.type !== 'AssignmentExpression' || n.operator !== '=' || n.left.type !== 'MemberExpression' || n.left.computed ||
+        n.left.property.name !== CALLSET) return;
+    const call = n.left.object;
+    if (call.type !== 'CallExpression' || call.callee.type !== 'MemberExpression' || call.callee.computed) return;
+    const replacement = {
+      type: 'CallExpression', optional: false, callee: { type: 'Identifier', name: '__untangle_callset' },
+      arguments: [call.callee.object, { type: 'Literal', value: call.callee.property.name }, { type: 'ArrayExpression', elements: call.arguments }, n.right],
+    };
+    for (const k of Object.keys(n)) if (!['parent', 'parentKey', 'parentIndex'].includes(k)) delete n[k];
+    Object.assign(n, replacement);
+  });
+  return node;
+}
+
 function preludeOf(stmts) {
   return stmts.map((s) => {
-    const c = clone(s);
+    const c = lowerCallsets(clone(s));
     if (c.type === 'VariableDeclaration') c.kind = 'var'; // make bindings visible as globals for side-effect checks
     return generate(c);
   }).join('\n');
@@ -134,6 +153,7 @@ function functionVariables(tree) {
 }
 
 const MAX_ARG_DEPTH = 4;
+const MAX_ARRAY_RESULT = 200000;
 
 /** Primitive value of a constant binding (`var buf = '...'`, never reassigned or read early), or NOT. */
 function bindingValue(id, cache) {
@@ -156,10 +176,30 @@ function argValue(a, cache) {
  * Is `a` a constant argument? Collects the function bindings of nested calls into `fns`.
  * Returns false, or true.
  */
+const PURE_METHODS = new Set(['concat', 'slice', 'join', 'split', 'substr', 'substring', 'charAt', 'charCodeAt', 'indexOf',
+  'lastIndexOf', 'toString', 'toUpperCase', 'toLowerCase', 'trim', 'replace', 'reverse', 'map']);
+
+/** `arr` bound once to an array / object literal, read only here: the call may mutate it unobserved. */
+function soleLiteralBinding(id) {
+  const v = id.type === 'Identifier' ? id.variable : null;
+  if (!v || !isConstVariable(v) || readBeforeDeclaration(v) || v.defs[0].type !== 'Variable') return null;
+  const init = v.defs[0].node.init;
+  if (!init || !/^(ArrayExpression|ObjectExpression)$/.test(init.type)) return null;
+  const reads = v.references.filter((r) => r.isRead());
+  return reads.length === 1 && reads[0].identifier === id ? init : null;
+}
+
 function constArg(a, cache, fns, fnVars, depth = 0) {
   if (!a || a.type === 'SpreadElement') return false;
   const sv = argValue(a, cache);
   if (sv !== NOT && isPrimitive(sv)) return true;
+  const lit = a.type === 'Identifier' && soleLiteralBinding(a);
+  if (lit) return constArg(lit, cache, fns, fnVars, depth);
+  // receiver.concat(x) / .slice(...) ...: the receiver chain does not count towards the depth
+  if (a.type === 'CallExpression' && !a.optional && a.callee.type === 'MemberExpression' && !a.callee.computed &&
+      PURE_METHODS.has(a.callee.property.name) && a.callee.property.name !== 'map') {
+    return constArg(a.callee.object, cache, fns, fnVars, depth) && a.arguments.every((x) => constArg(x, cache, fns, fnVars, depth + 1));
+  }
   if (depth >= MAX_ARG_DEPTH) return false;
   if (a.type === 'ArrayExpression') return a.elements.every((e) => e && constArg(e, cache, fns, fnVars, depth + 1));
   if (a.type === 'ObjectExpression') {
@@ -176,12 +216,19 @@ function constArg(a, cache, fns, fnVars, depth = 0) {
 
 /** The call as standalone code: constant identifiers replaced by their values. */
 function standalone(n, cache) {
+  const lit = n.type === 'Identifier' && soleLiteralBinding(n);
+  if (lit) return standalone(lit, cache);
   const sv = argValue(n, cache);
   if (n.type !== 'CallExpression' && n.type !== 'MemberExpression' && sv !== NOT && isPrimitive(sv)) return valueToNode(sv);
   switch (n.type) {
-    case 'CallExpression': return { type: 'CallExpression', optional: false, callee: clone(n.callee), arguments: n.arguments.map((a) => standalone(a, cache)) };
+    case 'CallExpression': {
+      const callee = n.callee.type === 'MemberExpression' && !n.callee.computed && PURE_METHODS.has(n.callee.property.name)
+        ? { type: 'MemberExpression', computed: false, optional: false, object: standalone(n.callee.object, cache), property: clone(n.callee.property) }
+        : clone(n.callee);
+      return { type: 'CallExpression', optional: false, callee, arguments: n.arguments.map((a) => standalone(a, cache)) };
+    }
     case 'MemberExpression': return { type: 'MemberExpression', optional: false, computed: n.computed, object: standalone(n.object, cache), property: n.computed ? standalone(n.property, cache) : clone(n.property) };
-    case 'ArrayExpression': return { type: 'ArrayExpression', elements: n.elements.map((e) => standalone(e, cache)) };
+    case 'ArrayExpression': return { type: 'ArrayExpression', elements: n.elements.map((e) => (e ? standalone(e, cache) : e)) };
     case 'ObjectExpression': return { type: 'ObjectExpression', properties: n.properties.map((p) => ({ ...clone(p), value: standalone(p.value, cache) })) };
     default: return clone(n);
   }
@@ -259,9 +306,11 @@ export default {
     }
     if (ctx.options.planOnly) { ctx.planned = plans.reduce((n, p) => n + p.calls.length, 0); return 0; } // static mode: count, never run
     // decoder machinery nothing outside uses any more (string arrays, decoders, rotators that only shuffle them)
+    const globalsByName = globalsReachable(tree); // this[k]() may call any global function: keep global decoders
     if (ctx.options.removeDeadCode !== false) {
       const busy = new Set(plans.flatMap((p) => p.context.stmts));
       for (const f of fnList) {
+        if (globalsByName && f.scope.type === 'global') continue;
         const c = contextOf(f);
         if (!c || c.stmts.some((st) => busy.has(st))) continue;
         const outside = [...c.vars].some((cv) => cv.references.some((r) => !c.stmts.some((st) => isInside(r.identifier, st))));
@@ -272,7 +321,7 @@ export default {
       }
     }
     if (!plans.length) return ctx.count;
-    const jobs = plans.map((p) => ({ prelude: preludeOf(p.context.stmts), exprs: p.calls.map((c) => generate(standalone(c, ctx.cache))) }));
+    const jobs = plans.map((p) => ({ prelude: preludeOf(p.context.stmts), exprs: p.calls.map((c) => generate(lowerCallsets(standalone(c, ctx.cache)))) }));
     const results = runJobs(jobs, ctx.options.sandbox);
 
     plans.forEach((plan, i) => {
@@ -282,12 +331,14 @@ export default {
       res.values.forEach((r, j) => {
         if (!r.ok) return;
         const value = fromSandbox(r.v);
-        if (!['string', 'number', 'boolean'].includes(typeof value)) return;
+        const prim = (x) => ['string', 'number', 'boolean'].includes(typeof x);
+        if (!prim(value) && !(Array.isArray(value) && value.length <= MAX_ARRAY_RESULT && value.every(prim))) return;
         if (ctx.replace(plan.calls[j], valueToNode(value))) resolved++;
       });
       if (resolved) ctx.log(`resolveDecoderCalls: ${plan.v.name} resolved ${resolved}/${plan.calls.length} calls`);
       // everything resolved and nothing else uses the context -> drop decoder, array and rotators
-      if (resolved === plan.calls.length && ctx.options.removeDeadCode !== false) {
+      if (resolved === plan.calls.length && ctx.options.removeDeadCode !== false &&
+          !(globalsByName && plan.v.scope.type === 'global')) {
         const resolvedSet = new Set(plan.calls);
         const { stmts, vars } = plan.own;
         const inResolved = (id) => plan.calls.some((c) => isInside(id, c));

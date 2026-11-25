@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.12.0
+
+- `resolveDecoderCalls`:
+  - JScript `Scripting.Dictionary` is emulated in the sandbox, including `d.Item(k) = v`. Any other
+    `ActiveXObject` still throws.
+  - A literal array or object bound to a name that is read only in the call counts as a constant
+    argument (`var data = [104, ...]; dec(data, 7)`).
+  - Pure string-method chains on constant receivers count too (`'ab'.concat(x).toUpperCase()`,
+    `s.split('>').join('')`).
+  - Results may be arrays of primitives (up to 200 000 items), so a decoder that returns bytes can
+    feed the next one.
+- `unwrapEval`: `new Function('code').call(x)` / `.apply(x, args)` becomes
+  `(function () { code }).call(x)` under the same capture rule as `Function('code')()`.
+- Global-object tracking follows `(function () { var root = this; ... }).call(this)` wrappers: only a
+  computed access or an escape of the inner `this` / alias keeps every global, and an arrow's
+  `this` now counts as the outer one. The decoder machinery sweep and the removal after full
+  resolution respect it, so a script that does `this[k]()` keeps its top-level decoders.
+- Together: a JScript dropper with a four-layer `new Function(...)` loader and 80 000 lines of junk
+  declarations comes out as 67 readable lines; a dropper that builds its base64 payload with
+  `.split('>').join('')` now shows the base64 itself.
+
 ## 0.11.1
 
 - JScript call assignments (`dict.Item("k") = v`, `rs.Fields(0).Value = v`, `env("X") += v`) no

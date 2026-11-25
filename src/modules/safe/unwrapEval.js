@@ -1,6 +1,7 @@
 // eval('a(1); b(2);')  -> a(1); b(2);
 // x = eval('1 + y')     -> x = 1 + y
 // Function('return this')() / new Function('code')() -> (function () { code })()   (only when free names stay global)
+// new Function('code').call(x) / .apply(x, args)      -> (function () { code }).call(x)
 import * as eslintScope from 'eslint-scope';
 import { parse, VisitorKeys } from '../../ast.js';
 import { staticValue } from '../../values.js';
@@ -46,7 +47,10 @@ export default {
       }
       // Function('code')() — immediately invoked function shells
       const outer = call.parent;
-      if (!outer || outer.type !== 'CallExpression' || outer.callee !== call || outer.arguments.length) continue;
+      const invoked = outer && outer.type === 'CallExpression' && outer.callee === call && !outer.arguments.length;
+      const viaCall = outer && outer.type === 'MemberExpression' && outer.object === call && !outer.computed &&
+        ['call', 'apply'].includes(outer.property.name) && outer.parent.type === 'CallExpression' && outer.parent.callee === outer;
+      if (!invoked && !viaCall) continue;
       if (!isGlobalCallee(call.callee, 'Function') || call.arguments.length !== 1) continue;
       const body = staticValue(call.arguments[0], ctx.cache);
       if (typeof body !== 'string') continue;

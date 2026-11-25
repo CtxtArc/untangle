@@ -124,16 +124,69 @@ export function evalCanSee(scope) {
 export function globalsReachable(tree) {
   if (tree.sourceType !== 'script') return true;
   if (tree.scopeManager.scopes.some((s) => s.type === 'with')) return true;
-  const aliases = new Set(['window', 'self', 'globalThis', 'top', 'parent', 'frames']);
-  for (const n of tree.nodes) {
-    const g = (n.type === 'ThisExpression' && tree.scopeAt(n).variableScope.type === 'global') ||
-      (n.type === 'Identifier' && aliases.has(n.name) && n.reference && !n.reference.resolved);
-    if (!g) continue;
-    const m = n.parent;
-    if (m.type === 'MemberExpression' && m.object === n && propName(m) !== NOT) continue;
-    return true;
+  return globalObjectEscapes(tree);
+}
+
+const GLOBAL_ALIASES = new Set(['window', 'self', 'globalThis', 'top', 'parent', 'frames']);
+
+/** The function whose `this` a ThisExpression denotes (arrows see through), or null at top level. */
+function thisOwner(tree, n) {
+  for (let s = tree.scopeAt(n); s; s = s.upper) {
+    if (s.type === 'function' && s.block.type !== 'ArrowFunctionExpression') return s.block;
+    if (s.type === 'global' || s.type === 'module') return null;
   }
-  return false;
+  return null;
+}
+
+/**
+ * Does the global object flow anywhere other than a static `g.name` read? `this`/`window` at top
+ * level are followed through the usual module wrappers, so `(function () { ... }).call(this)` and
+ * `var root = this;` only count when that inner `this` / alias is itself used by computed name or
+ * passed on.
+ */
+function globalObjectEscapes(tree) {
+  const thisByOwner = new Map();
+  const roots = [];
+  for (const n of tree.nodes) {
+    if (n.type === 'ThisExpression') {
+      const o = thisOwner(tree, n);
+      if (!o) roots.push(n);
+      else {
+        let l = thisByOwner.get(o);
+        if (!l) thisByOwner.set(o, (l = []));
+        l.push(n);
+      }
+    } else if (n.type === 'Identifier' && GLOBAL_ALIASES.has(n.name) && n.reference && !n.reference.resolved) {
+      roots.push(n);
+    }
+  }
+  const seen = new Set();
+  const escapes = (n, depth) => {
+    if (depth > 32) return true;
+    const m = n.parent;
+    if (m.type === 'MemberExpression' && m.object === n) return propName(m) === NOT; // this.x ok, this[k] not
+    if (m.type === 'MemberExpression') return true; // x[this]
+    // (function () { ... }).call(g, ...) / .apply(g, ...): follow the callee's own `this`
+    if (m.type === 'CallExpression' && m.arguments[0] === n && m.callee.type === 'MemberExpression' &&
+        !m.callee.computed && ['call', 'apply'].includes(m.callee.property.name) &&
+        m.callee.object.type === 'FunctionExpression') {
+      const fn = m.callee.object;
+      if (seen.has(fn)) return false;
+      seen.add(fn);
+      return (thisByOwner.get(fn) || []).some((t) => escapes(t, depth + 1));
+    }
+    // var root = this;  (never reassigned): follow every read of root
+    if (m.type === 'VariableDeclarator' && m.init === n && m.id.type === 'Identifier' && m.id.variable) {
+      const v = m.id.variable;
+      if (seen.has(v)) return false;
+      if (v.defs.length !== 1) return true;
+      if (v.references.some((r) => r.isWrite() && r.identifier !== m.id)) return true;
+      seen.add(v);
+      return v.references.some((r) => r.isRead() && escapes(r.identifier, depth + 1));
+    }
+    return true; // f(this), return this, x = window, ...
+  };
+  return roots.some((n) => escapes(n, 0));
 }
 
 /** Can a script reach global-object properties by computed name or through an alias of the global? */
@@ -143,16 +196,7 @@ function globalsEscape(tree) {
     if (s.type === 'with') return true;
     if (s.references.some((r) => r.identifier.name === 'eval' && !r.resolved)) return true;
   }
-  const aliases = new Set(['window', 'self', 'globalThis', 'top', 'parent', 'frames']);
-  for (const n of tree.nodes) {
-    const globalThisRef = (n.type === 'ThisExpression' && tree.scopeAt(n).variableScope.type === 'global') ||
-      (n.type === 'Identifier' && aliases.has(n.name) && n.reference && !n.reference.resolved);
-    if (!globalThisRef) continue;
-    const m = n.parent;
-    if (m.type === 'MemberExpression' && m.object === n && propName(m) !== NOT) continue; // this.x / window.x
-    return true; // this[expr], f(this), var g = window, ...
-  }
-  return false;
+  return globalObjectEscapes(tree);
 }
 
 /** A value that is a brand-new object/array (or a primitive), so writes to its properties can't leak. */
